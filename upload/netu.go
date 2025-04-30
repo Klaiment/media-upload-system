@@ -88,7 +88,7 @@ func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error)
 
 	log.Printf("Upload terminé avec succès, code du fichier: %s", fileCode)
 
-	// Construire les URLs avec le nouveau domaine player1.streameo.me
+	// Construire les URLs avec le domaine player1.streameo.me pour le player
 	directURL := fmt.Sprintf("https://player1.streameo.me/watch/%s", fileCode)
 	embedURL := fmt.Sprintf("https://player1.streameo.me/embed/%s", fileCode)
 
@@ -106,6 +106,7 @@ func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error)
 
 // getUploadServer obtient l'URL du serveur d'upload
 func (n *NetuUploader) getUploadServer() (string, error) {
+	// Utiliser netu.tv pour les appels API
 	url := fmt.Sprintf("https://netu.tv/api/file/upload_server?key=%s", n.ApiKey)
 
 	resp, err := http.Get(url)
@@ -124,7 +125,7 @@ func (n *NetuUploader) getUploadServer() (string, error) {
 	}
 
 	if !response.Success {
-		return "", fmt.Errorf("l'API a retourné une erreur: %s", response.Status)
+		return "", fmt.Errorf("l'API a retourné une erreur: %d", response.Status)
 	}
 
 	return response.Result.URL, nil
@@ -196,7 +197,7 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 
 	// Vérifier si l'upload a réussi
 	if !response.Success {
-		return "", fmt.Errorf("l'upload a échoué: %s", response.Status)
+		return "", fmt.Errorf("l'upload a échoué: %d", response.Status)
 	}
 
 	// Convertir le time_hash en string
@@ -207,6 +208,7 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 
 // finalizeUpload finalise l'upload et obtient le code du fichier
 func (n *NetuUploader) finalizeUpload(filename, title, timeHash string) (string, error) {
+	// Utiliser netu.tv pour les appels API
 	url := fmt.Sprintf("https://netu.tv/api/file/create?key=%s&name=%s&description=%s&time_hash=%s", n.ApiKey, filename, title, timeHash)
 
 	resp, err := http.Get(url)
@@ -225,7 +227,7 @@ func (n *NetuUploader) finalizeUpload(filename, title, timeHash string) (string,
 	}
 
 	if !response.Success {
-		return "", fmt.Errorf("l'API a retourné une erreur: %s", response.Status)
+		return "", fmt.Errorf("l'API a retourné une erreur: %d", response.Status)
 	}
 
 	return response.Result.FileCode, nil
