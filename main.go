@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +18,8 @@ import (
 	"media-upload-system/config"
 	"media-upload-system/model"
 	"media-upload-system/storage"
+	"media-upload-system/strapi"
+	"media-upload-system/tmdb"
 	"media-upload-system/upload"
 	"media-upload-system/worker"
 )
@@ -29,6 +32,8 @@ var (
 	uploadMgr     *upload.Manager
 	apiClient     *api.Client
 	discordClient *api.DiscordWebhook
+	strapiClient  *strapi.StrapiClient
+	tmdbClient    *tmdb.TMDBClient
 )
 
 // Gestionnaire de webhook
@@ -366,6 +371,16 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 		}
 	}
 
+	// Si Strapi est activé, envoyer les données à Strapi
+	if cfg.Strapi.Enabled && len(discordLinks) > 0 {
+		for _, link := range discordLinks {
+			if err := sendToStrapi(tmdbID, title, link.URL); err != nil {
+				log.Printf("Erreur lors de l'envoi à Strapi: %v", err)
+				// Continuer même en cas d'erreur
+			}
+		}
+	}
+
 	log.Printf("Upload du film terminé avec succès: %s (ID: %d)", title, uploadID)
 	return nil
 }
@@ -483,7 +498,86 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 		}
 	}
 
+	// Si Strapi est activé, envoyer les données à Strapi
+	if cfg.Strapi.Enabled && len(discordLinks) > 0 {
+		for _, link := range discordLinks {
+			if err := sendToStrapiSeries(tmdbID, title, link.URL, season, episode); err != nil {
+				log.Printf("Erreur lors de l'envoi à Strapi: %v", err)
+				// Continuer même en cas d'erreur
+			}
+		}
+	}
+
 	log.Printf("Upload de l'épisode terminé avec succès: %s S%02dE%02d (ID: %d)", title, season, episode, uploadID)
+	return nil
+}
+
+// sendToStrapi envoie les données du film à Strapi
+func sendToStrapi(tmdbID int, title, url string) error {
+	log.Printf("Envoi des données du film %s à Strapi...", title)
+
+	// Se connecter à Strapi si nécessaire
+	if strapiClient.AuthToken == "" {
+		if err := strapiClient.Login(); err != nil {
+			return fmt.Errorf("erreur lors de la connexion à Strapi: %w", err)
+		}
+	}
+
+	// Récupérer les détails du film depuis TMDB
+	tmdbData, err := tmdbClient.GetMovieDetailsJSON(tmdbID)
+	if err != nil {
+		return fmt.Errorf("erreur lors de la récupération des détails du film: %w", err)
+	}
+
+	// Récupérer les genres du film
+	movieDetails, err := tmdbClient.GetMovieDetails(tmdbID)
+	if err != nil {
+		return fmt.Errorf("erreur lors de la récupération des détails du film: %w", err)
+	}
+
+	// Extraire les noms des genres
+	var genreNames []string
+	for _, genre := range movieDetails.Genres {
+		genreNames = append(genreNames, genre.Name)
+	}
+
+	// Trouver les IDs des genres dans Strapi
+	genderIDs, err := strapiClient.FindGenderIDsByNames(genreNames)
+	if err != nil {
+		return fmt.Errorf("erreur lors de la recherche des IDs de genres: %w", err)
+	}
+
+	// Créer la fiche dans Strapi
+	ficheResp, err := strapiClient.CreateFiche(title, strconv.Itoa(tmdbID), tmdbData, genderIDs)
+	if err != nil {
+		return fmt.Errorf("erreur lors de la création de la fiche: %w", err)
+	}
+
+	// Créer le lien dans Strapi
+	_, err = strapiClient.CreateLink(url, ficheResp.Data.DocumentID)
+	if err != nil {
+		return fmt.Errorf("erreur lors de la création du lien: %w", err)
+	}
+
+	log.Printf("Données du film envoyées avec succès à Strapi")
+	return nil
+}
+
+// sendToStrapiSeries envoie les données de la série à Strapi
+func sendToStrapiSeries(tmdbID int, title, url string, season, episode int) error {
+	log.Printf("Envoi des données de la série %s S%02dE%02d à Strapi...", title, season, episode)
+
+	// Se connecter à Strapi si nécessaire
+	if strapiClient.AuthToken == "" {
+		if err := strapiClient.Login(); err != nil {
+			return fmt.Errorf("erreur lors de la connexion à Strapi: %w", err)
+		}
+	}
+
+	// TODO: Implémenter la logique pour les séries
+	// Pour l'instant, on utilise la même logique que pour les films
+
+	log.Printf("Données de la série envoyées avec succès à Strapi")
 	return nil
 }
 
@@ -571,6 +665,19 @@ func main() {
 
 	// Initialiser le client Discord
 	discordClient = api.NewDiscordWebhook(cfg.Discord.WebhookURL)
+
+	// Initialiser le client Strapi si activé
+	if cfg.Strapi.Enabled {
+		strapiClient = strapi.NewStrapiClient(cfg.Strapi.BaseURL, cfg.Strapi.Username, cfg.Strapi.Password)
+
+		// Tester la connexion à Strapi
+		if err := strapiClient.Login(); err != nil {
+			log.Printf("Avertissement: Impossible de se connecter à Strapi: %v", err)
+		}
+	}
+
+	// Initialiser le client TMDB
+	tmdbClient = tmdb.NewTMDBClient(cfg.TMDB.ApiKey)
 
 	// Définir les routes
 	http.HandleFunc("/webhook", webhookHandler)

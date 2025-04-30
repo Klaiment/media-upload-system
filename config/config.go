@@ -27,7 +27,7 @@ type Config struct {
 			Email   string `json:"email"`
 			ApiKey  string `json:"apiKey"`
 		} `json:"mixdrop"`
-		// Ajoutez d'autres hébergeurs ici
+		// Vous pouvez ajouter d'autres uploaders ici
 	} `json:"uploaders"`
 
 	Database struct {
@@ -45,6 +45,13 @@ type Config struct {
 	TMDB struct {
 		ApiKey string `json:"apiKey"`
 	} `json:"tmdb"`
+
+	Strapi struct {
+		Enabled  bool   `json:"enabled"`
+		BaseURL  string `json:"baseUrl"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	} `json:"strapi"`
 }
 
 // LoadConfig charge la configuration depuis un fichier JSON
@@ -81,44 +88,51 @@ func LoadConfig(path string) (*Config, error) {
 // CreateDefaultConfig crée un fichier de configuration par défaut
 func CreateDefaultConfig(path string) error {
 	config := Config{}
-	
+
 	// Serveur
 	config.Server.Port = 3005
 	config.Server.Host = "0.0.0.0"
-	
+
 	// Workers
 	config.Workers.MaxConcurrent = 10
-	
+
 	// Uploaders
 	config.Uploaders.Netu.Enabled = true
 	config.Uploaders.Netu.ApiKey = "d81d2161e383e64533b3e0015bfa6b9a"
-	
-	config.Uploaders.MixDrop.Enabled = true
-	config.Uploaders.MixDrop.Email = "streameo@proton.me"
-	config.Uploaders.MixDrop.ApiKey = "bX5CPdwaeQQ5DBJUX"
-	
+
+	config.Uploaders.MixDrop.Enabled = false
+	config.Uploaders.MixDrop.Email = "your-email@example.com"
+	config.Uploaders.MixDrop.ApiKey = "your-mixdrop-api-key"
+
 	// Database
 	config.Database.Path = "./uploads.db"
-	
+
 	// API
 	config.API.Endpoint = "https://your-site.com/api/media"
-	
+
 	// Discord
-	config.Discord.WebhookURL = "https://discordapp.com/api/webhooks/1367197008187752522/rzjd_SKy8LkV1YAOkDys7y-XVi9GSQtvfHEmRdalE7k1VA4iozt0mFUTrSB0sugWwZvY"
-	
+	config.Discord.WebhookURL = "https://discord.com/api/webhooks/your-webhook-url"
+
 	// TMDB
-	config.TMDB.ApiKey = "bfdc88d1d7b360fca90425956dcb6951"
-	
+	config.TMDB.ApiKey = "3e104b3f1e36e8c494a6f5e0f7f67e0d"
+
+	// Strapi
+	config.Strapi.Enabled = true
+	//config.Strapi.BaseURL = "https://api.streameo.me"
+	config.Strapi.BaseURL = "http://localhost:1337"
+	config.Strapi.Username = "admin"
+	config.Strapi.Password = "Clement123!"
+
 	// Sérialiser en JSON
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("erreur lors de la sérialisation de la configuration: %w", err)
 	}
-	
+
 	// Écrire dans le fichier
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("erreur lors de l'écriture du fichier de configuration: %w", err)
 	}
-	
+
 	return nil
 }
