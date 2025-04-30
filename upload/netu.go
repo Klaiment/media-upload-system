@@ -96,7 +96,7 @@ func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error)
 	log.Printf("Upload terminé avec succès, code du fichier: %s, code embed: %s", fileCode, fileCodeEmbed)
 
 	// Construire les URLs avec le nouveau format pour l'embed
-	directURL := fmt.Sprintf("https://player1.streameo.me/e/%s", fileCodeEmbed)
+	directURL := fmt.Sprintf("https://player1.streameo.me/watch/%s", fileCode)
 	embedURL := fmt.Sprintf("https://player1.streameo.me/e/%s", fileCodeEmbed)
 
 	// Créer le résultat
