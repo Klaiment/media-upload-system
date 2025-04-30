@@ -1,0 +1,32 @@
+{
+  "server": {
+    "port": 3005,
+    "host": "0.0.0.0"
+  },
+  "workers": {
+    "maxConcurrent": 10
+  },
+  "uploaders": {
+    "netu": {
+      "enabled": true,
+      "apiKey": "d81d2161e383e64533b3e0015bfa6b9a"
+    },
+    "mixdrop": {
+      "enabled": true,
+      "email": "streameo@proton.me",
+      "apiKey": "bX5CPdwaeQQ5DBJUX"
+    }
+  },
+  "database": {
+    "path": "./uploads.db"
+  },
+  "api": {
+    "endpoint": "https://your-site.com/api/media"
+  },
+  "discord": {
+    "webhookUrl": "https://discordapp.com/api/webhooks/1367197008187752522/rzjd_SKy8LkV1YAOkDys7y-XVi9GSQtvfHEmRdalE7k1VA4iozt0mFUTrSB0sugWwZvY"
+  },
+  "tmdb": {
+    "apiKey": "bfdc88d1d7b360fca90425956dcb6951"
+  }
+}
