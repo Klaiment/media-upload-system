@@ -119,7 +119,7 @@ func CreateDefaultConfig(path string) error {
 	// Strapi
 	config.Strapi.Enabled = true
 	//config.Strapi.BaseURL = "https://api.streameo.me"
-	config.Strapi.BaseURL = "http://localhost:1337"
+	config.Strapi.BaseURL = "https://api.streameo.me"
 	config.Strapi.Username = "admin"
 	config.Strapi.Password = "Clement123!"
 

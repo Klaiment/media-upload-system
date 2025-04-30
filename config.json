@@ -31,7 +31,7 @@
   },
   "strapi": {
     "enabled": true,
-    "baseUrl": "http://localhost:1337",
+    "baseUrl": "https://api.streameo.me",
     "username": "admin",
     "password": "Clement123!"
   }
