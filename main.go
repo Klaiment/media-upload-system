@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
@@ -22,9 +21,6 @@ import (
 	"media-upload-system/tmdb"
 	"media-upload-system/upload"
 	"media-upload-system/worker"
-
-	"github.com/fsnotify/fsnotify"
-	"github.com/robfig/cron/v3"
 )
 
 // Variables globales
@@ -32,7 +28,7 @@ var (
 	cfg           *config.Config
 	db            *storage.Database
 	workerPool    *worker.Pool
-	uploadMgr     *upload.UploadManager // Changé de Manager à UploadManager
+	uploadMgr     *upload.Uploader // Utilisation du type Uploader au lieu de Manager
 	apiClient     *api.Client
 	discordClient *api.DiscordWebhook
 	strapiClient  *strapi.StrapiClient
@@ -216,54 +212,68 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 		return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
 	}
 
-	// Obtenir la liste des uploaders activés
-	enabledUploaders := uploadMgr.GetEnabledUploaders()
-
-	// Créer une tâche pour chaque uploader
-	var wg sync.WaitGroup
-	var mutex sync.Mutex
+	// Créer une liste pour stocker les résultats d'upload
 	var results []*upload.UploadResult
+	var mutex sync.Mutex
+	var wg sync.WaitGroup
 	var errors []error
 
-	for _, uploader := range enabledUploaders {
+	// Uploader vers MixDrop si activé
+	if cfg.Uploaders.MixDrop.Enabled {
 		wg.Add(1)
-
-		// Créer une tâche pour cet uploader
-		uploaderName := uploader.Name() // Capturer la valeur pour la goroutine
-
-		// Ajouter la tâche au pool de workers
 		workerPool.AddTask(func() error {
 			defer wg.Done()
+			log.Printf("Démarrage de l'upload vers mixdrop pour le film %s (ID: %d)", title, uploadID)
 
-			log.Printf("Démarrage de l'upload vers %s pour le film %s (ID: %d)", uploaderName, title, uploadID)
+			mixdropUploader := upload.NewMixDropUploader(
+				cfg.Uploaders.MixDrop.Email,
+				cfg.Uploaders.MixDrop.ApiKey,
+				cfg.Uploaders.MixDrop.Enabled,
+			)
 
-			// Récupérer l'uploader par son nom
-			uploader, err := uploadMgr.GetUploader(uploaderName)
+			result, err := mixdropUploader.UploadFile(filePath, title)
 			if err != nil {
-				log.Printf("Erreur lors de la récupération de l'uploader %s: %v", uploaderName, err)
+				log.Printf("Erreur lors de l'upload vers MixDrop: %v", err)
 				mutex.Lock()
 				errors = append(errors, err)
 				mutex.Unlock()
 				return err
+			} else {
+				log.Printf("Upload vers mixdrop terminé avec succès pour le film %s (ID: %d)", title, uploadID)
+				mutex.Lock()
+				results = append(results, result)
+				mutex.Unlock()
+				return nil
 			}
+		})
+	}
 
-			// Uploader le fichier
-			result, err := uploader.UploadFile(filePath, title)
+	// Uploader vers Netu si activé
+	if cfg.Uploaders.Netu.Enabled {
+		wg.Add(1)
+		workerPool.AddTask(func() error {
+			defer wg.Done()
+			log.Printf("Démarrage de l'upload vers netu pour le film %s (ID: %d)", title, uploadID)
+
+			netuUploader := upload.NewNetuUploader(
+				cfg.Uploaders.Netu.ApiKey,
+				cfg.Uploaders.Netu.Enabled,
+			)
+
+			result, err := netuUploader.UploadFile(filePath, title)
 			if err != nil {
-				log.Printf("Erreur lors de l'upload vers %s: %v", uploaderName, err)
+				log.Printf("Erreur lors de l'upload vers Netu: %v", err)
 				mutex.Lock()
 				errors = append(errors, err)
 				mutex.Unlock()
 				return err
+			} else {
+				log.Printf("Upload vers netu terminé avec succès pour le film %s (ID: %d)", title, uploadID)
+				mutex.Lock()
+				results = append(results, result)
+				mutex.Unlock()
+				return nil
 			}
-
-			// Ajouter le résultat à la liste
-			mutex.Lock()
-			results = append(results, result)
-			mutex.Unlock()
-
-			log.Printf("Upload vers %s terminé avec succès pour le film %s (ID: %d)", uploaderName, title, uploadID)
-			return nil
 		})
 	}
 
@@ -426,56 +436,70 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 		return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
 	}
 
-	// Obtenir la liste des uploaders activés
-	enabledUploaders := uploadMgr.GetEnabledUploaders()
-
-	// Créer une tâche pour chaque uploader
-	var wg sync.WaitGroup
-	var mutex sync.Mutex
+	// Créer une liste pour stocker les résultats d'upload
 	var results []*upload.UploadResult
+	var mutex sync.Mutex
+	var wg sync.WaitGroup
 	var errors []error
 
 	episodeTitle := fmt.Sprintf("%s S%02dE%02d", title, season, episode)
 
-	for _, uploader := range enabledUploaders {
+	// Uploader vers MixDrop si activé
+	if cfg.Uploaders.MixDrop.Enabled {
 		wg.Add(1)
-
-		// Créer une tâche pour cet uploader
-		uploaderName := uploader.Name() // Capturer la valeur pour la goroutine
-
-		// Ajouter la tâche au pool de workers
 		workerPool.AddTask(func() error {
 			defer wg.Done()
+			log.Printf("Démarrage de l'upload vers mixdrop pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
 
-			log.Printf("Démarrage de l'upload vers %s pour l'épisode %s (ID: %d)", uploaderName, episodeTitle, uploadID)
+			mixdropUploader := upload.NewMixDropUploader(
+				cfg.Uploaders.MixDrop.Email,
+				cfg.Uploaders.MixDrop.ApiKey,
+				cfg.Uploaders.MixDrop.Enabled,
+			)
 
-			// Récupérer l'uploader par son nom
-			uploader, err := uploadMgr.GetUploader(uploaderName)
+			result, err := mixdropUploader.UploadFile(filePath, episodeTitle)
 			if err != nil {
-				log.Printf("Erreur lors de la récupération de l'uploader %s: %v", uploaderName, err)
+				log.Printf("Erreur lors de l'upload vers MixDrop: %v", err)
 				mutex.Lock()
 				errors = append(errors, err)
 				mutex.Unlock()
 				return err
+			} else {
+				log.Printf("Upload vers mixdrop terminé avec succès pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
+				mutex.Lock()
+				results = append(results, result)
+				mutex.Unlock()
+				return nil
 			}
+		})
+	}
 
-			// Uploader le fichier
-			result, err := uploader.UploadFile(filePath, episodeTitle)
+	// Uploader vers Netu si activé
+	if cfg.Uploaders.Netu.Enabled {
+		wg.Add(1)
+		workerPool.AddTask(func() error {
+			defer wg.Done()
+			log.Printf("Démarrage de l'upload vers netu pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
+
+			netuUploader := upload.NewNetuUploader(
+				cfg.Uploaders.Netu.ApiKey,
+				cfg.Uploaders.Netu.Enabled,
+			)
+
+			result, err := netuUploader.UploadFile(filePath, episodeTitle)
 			if err != nil {
-				log.Printf("Erreur lors de l'upload vers %s: %v", uploaderName, err)
+				log.Printf("Erreur lors de l'upload vers Netu: %v", err)
 				mutex.Lock()
 				errors = append(errors, err)
 				mutex.Unlock()
 				return err
+			} else {
+				log.Printf("Upload vers netu terminé avec succès pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
+				mutex.Lock()
+				results = append(results, result)
+				mutex.Unlock()
+				return nil
 			}
-
-			// Ajouter le résultat à la liste
-			mutex.Lock()
-			results = append(results, result)
-			mutex.Unlock()
-
-			log.Printf("Upload vers %s terminé avec succès pour l'épisode %s (ID: %d)", uploaderName, episodeTitle, uploadID)
-			return nil
 		})
 	}
 
@@ -620,26 +644,8 @@ func main() {
 	workerPool.Start()
 	defer workerPool.Stop()
 
-	// Initialiser le gestionnaire d'uploads
-	uploadMgr = upload.NewUploadManager() // Changé de NewManager à NewUploadManager
-
-	// Enregistrer les uploaders
-	if cfg.Uploaders.Netu.Enabled {
-		netuUploader := upload.NewNetuUploader(cfg.Uploaders.Netu.ApiKey, true)
-		uploadMgr.RegisterUploader(netuUploader)
-	}
-
-	if cfg.Uploaders.MixDrop.Enabled {
-		mixdropUploader := upload.NewMixDropUploader(cfg.Uploaders.MixDrop.Email, cfg.Uploaders.MixDrop.ApiKey, true)
-		uploadMgr.RegisterUploader(mixdropUploader)
-	}
-
-	// Vous pouvez ajouter d'autres uploaders ici
-	// Par exemple:
-	// if cfg.Uploaders.Uptobox.Enabled {
-	//     uptoboxUploader := upload.NewUptoboxUploader(cfg.Uploaders.Uptobox.ApiKey, true)
-	//     uploadMgr.RegisterUploader(uptoboxUploader)
-	// }
+	// Nous n'initialisons plus le gestionnaire d'uploads ici
+	// car nous créons directement les uploaders dans les fonctions processMovieUpload et processEpisodeUpload
 
 	// Initialiser le client API
 	apiClient = api.NewClient(cfg.API.Endpoint)
