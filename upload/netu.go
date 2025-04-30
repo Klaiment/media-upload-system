@@ -8,6 +8,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -121,9 +122,9 @@ type ServerInfo struct {
 // getUploadServer obtient l'URL du serveur d'upload
 func (n *NetuUploader) getUploadServer() (*ServerInfo, error) {
 	// Utiliser netu.tv pour les appels API
-	url := fmt.Sprintf("https://netu.tv/api/file/upload_server?key=%s", n.ApiKey)
+	apiURL := fmt.Sprintf("https://netu.tv/api/file/upload_server?key=%s", n.ApiKey)
 
-	resp, err := http.Get(url)
+	resp, err := http.Get(apiURL)
 	if err != nil {
 		return nil, fmt.Errorf("erreur lors de la requête HTTP: %w", err)
 	}
@@ -263,23 +264,23 @@ func (n *NetuUploader) uploadToServer(filePath string, serverInfo *ServerInfo) (
 
 // finalizeUpload finalise l'upload et obtient le code du fichier
 func (n *NetuUploader) finalizeUpload(fileName, title string, serverInfo *ServerInfo) (string, error) {
-	// Utiliser netu.tv pour les appels API
-	url := fmt.Sprintf("https://netu.tv/api/file/add?key=%s&name=%s&server=%s&file_name=%s&server_id=%s",
-		n.ApiKey,
-		title,
-		serverInfo.UploadServer,
-		fileName,
-		serverInfo.ServerID)
+	// Encoder les paramètres pour l'URL
+	params := url.Values{}
+	params.Add("key", n.ApiKey)
+	params.Add("name", title)
+	params.Add("server", serverInfo.ServerID) // Utiliser server_id au lieu de l'URL complète
+	params.Add("file_name", fileName)
 
-	resp, err := http.Get(url)
+	// Utiliser netu.tv pour les appels API
+	apiURL := "https://netu.tv/api/file/add?" + params.Encode()
+
+	log.Printf("URL de finalisation: %s", apiURL)
+
+	resp, err := http.Get(apiURL)
 	if err != nil {
 		return "", fmt.Errorf("erreur lors de la requête HTTP: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("le serveur a retourné un code non-200: %d", resp.StatusCode)
-	}
 
 	// Lire le corps de la réponse
 	body, err := io.ReadAll(resp.Body)
@@ -288,6 +289,10 @@ func (n *NetuUploader) finalizeUpload(fileName, title string, serverInfo *Server
 	}
 
 	log.Printf("Réponse du serveur pour finaliser l'upload: %s", string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("le serveur a retourné un code non-200: %d, réponse: %s", resp.StatusCode, string(body))
+	}
 
 	// Décoder la réponse JSON
 	var response NetuUploadResponse
