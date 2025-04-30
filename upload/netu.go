@@ -22,27 +22,31 @@ type NetuUploader struct {
 
 // NetuUploadServerResponse représente la réponse de l'API pour obtenir le serveur d'upload
 type NetuUploadServerResponse struct {
-	Status  int  `json:"status"`
-	Success bool `json:"success"`
-	Result  struct {
-		URL string `json:"url"`
+	Status int    `json:"status"`
+	Msg    string `json:"msg"`
+	Result struct {
+		UploadServer string `json:"upload_server"`
+		ServerID     string `json:"server_id"`
+		Hash         string `json:"hash"`
+		TimeHash     int64  `json:"time_hash"`
+		UserID       string `json:"userid"`
+		KeyHash      string `json:"key_hash"`
 	} `json:"result"`
 }
 
 // NetuUploadResponse représente la réponse de l'API après l'upload du fichier
 type NetuUploadResponse struct {
-	Status  int  `json:"status"`
-	Success bool `json:"success"`
-	Result  struct {
+	Status int    `json:"status"`
+	Msg    string `json:"msg"`
+	Result struct {
 		FileCode string `json:"file_code"`
 	} `json:"result"`
 }
 
 // NetuUploadFileResponse représente la réponse du serveur d'upload
 type NetuUploadFileResponse struct {
-	Status   int   `json:"status"`
-	Success  bool  `json:"success"`
-	TimeHash int64 `json:"time_hash"`
+	Success  string `json:"success"`
+	FileName string `json:"file_name"`
 }
 
 // NewNetuUploader crée un nouvel uploader Netu.tv
@@ -67,21 +71,21 @@ func (n *NetuUploader) IsEnabled() bool {
 func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error) {
 	// Étape 1: Obtenir le serveur d'upload
 	log.Printf("Étape 1: Obtention du serveur d'upload...")
-	uploadServer, err := n.getUploadServer()
+	serverInfo, err := n.getUploadServer()
 	if err != nil {
 		return nil, fmt.Errorf("échec de l'obtention du serveur d'upload: %w", err)
 	}
 
 	// Étape 2: Uploader le fichier sur le serveur
-	log.Printf("Étape 2: Upload du fichier sur le serveur %s...", uploadServer)
-	timeHash, err := n.uploadToServer(filePath, uploadServer)
+	log.Printf("Étape 2: Upload du fichier sur le serveur %s...", serverInfo.UploadServer)
+	fileName, err := n.uploadToServer(filePath, serverInfo)
 	if err != nil {
 		return nil, fmt.Errorf("échec de l'upload du fichier: %w", err)
 	}
 
 	// Étape 3: Finaliser l'upload
 	log.Printf("Étape 3: Finalisation de l'upload...")
-	fileCode, err := n.finalizeUpload(filepath.Base(filePath), title, timeHash)
+	fileCode, err := n.finalizeUpload(fileName, title, serverInfo)
 	if err != nil {
 		return nil, fmt.Errorf("échec de la finalisation de l'upload: %w", err)
 	}
@@ -104,52 +108,65 @@ func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error)
 	return result, nil
 }
 
+// Structure pour stocker les informations du serveur d'upload
+type ServerInfo struct {
+	UploadServer string
+	ServerID     string
+	Hash         string
+	TimeHash     int64
+	UserID       string
+	KeyHash      string
+}
+
 // getUploadServer obtient l'URL du serveur d'upload
-func (n *NetuUploader) getUploadServer() (string, error) {
+func (n *NetuUploader) getUploadServer() (*ServerInfo, error) {
 	// Utiliser netu.tv pour les appels API
 	url := fmt.Sprintf("https://netu.tv/api/file/upload_server?key=%s", n.ApiKey)
 
 	resp, err := http.Get(url)
 	if err != nil {
-		return "", fmt.Errorf("erreur lors de la requête HTTP: %w", err)
+		return nil, fmt.Errorf("erreur lors de la requête HTTP: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("le serveur a retourné un code non-200: %d", resp.StatusCode)
+		return nil, fmt.Errorf("le serveur a retourné un code non-200: %d", resp.StatusCode)
 	}
 
-	// Lire le corps de la réponse pour le débogage
+	// Lire le corps de la réponse
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
+		return nil, fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
-	// Log de la réponse pour le débogage
 	log.Printf("Réponse du serveur pour upload_server: %s", string(body))
 
 	// Décoder la réponse JSON
 	var response NetuUploadServerResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+		return nil, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
-	// Vérifier si l'API a retourné un succès
-	// Le code 200 est un succès, donc on ne doit pas le traiter comme une erreur
-	if !response.Success {
-		return "", fmt.Errorf("l'API a retourné une erreur avec le statut: %d", response.Status)
+	// Vérifier si le statut est 200 (OK)
+	if response.Status != 200 {
+		return nil, fmt.Errorf("l'API a retourné un statut non-200: %d", response.Status)
 	}
 
-	// Vérifier si l'URL est vide
-	if response.Result.URL == "" {
-		return "", fmt.Errorf("l'API a retourné une URL vide")
+	// Créer et retourner les informations du serveur
+	serverInfo := &ServerInfo{
+		UploadServer: response.Result.UploadServer,
+		ServerID:     response.Result.ServerID,
+		Hash:         response.Result.Hash,
+		TimeHash:     response.Result.TimeHash,
+		UserID:       response.Result.UserID,
+		KeyHash:      response.Result.KeyHash,
 	}
 
-	return response.Result.URL, nil
+	return serverInfo, nil
 }
 
 // uploadToServer upload le fichier sur le serveur
-func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error) {
+func (n *NetuUploader) uploadToServer(filePath string, serverInfo *ServerInfo) (string, error) {
 	// Vérifier si le fichier existe
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return "", fmt.Errorf("le fichier n'existe pas: %s", filePath)
@@ -166,10 +183,27 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 	var requestBody bytes.Buffer
 	writer := multipart.NewWriter(&requestBody)
 
+	// Ajouter les champs du formulaire
+	if err := writer.WriteField("hash", serverInfo.Hash); err != nil {
+		return "", fmt.Errorf("erreur lors de l'ajout du champ hash: %w", err)
+	}
+	if err := writer.WriteField("time_hash", strconv.FormatInt(serverInfo.TimeHash, 10)); err != nil {
+		return "", fmt.Errorf("erreur lors de l'ajout du champ time_hash: %w", err)
+	}
+	if err := writer.WriteField("userid", serverInfo.UserID); err != nil {
+		return "", fmt.Errorf("erreur lors de l'ajout du champ userid: %w", err)
+	}
+	if err := writer.WriteField("key_hash", serverInfo.KeyHash); err != nil {
+		return "", fmt.Errorf("erreur lors de l'ajout du champ key_hash: %w", err)
+	}
+	if err := writer.WriteField("upload", "1"); err != nil {
+		return "", fmt.Errorf("erreur lors de l'ajout du champ upload: %w", err)
+	}
+
 	// Ajouter le fichier
-	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+	part, err := writer.CreateFormFile("Filedata", filepath.Base(filePath))
 	if err != nil {
-		return "", fmt.Errorf("erreur lors de la création du champ file: %w", err)
+		return "", fmt.Errorf("erreur lors de la création du champ Filedata: %w", err)
 	}
 
 	if _, err := io.Copy(part, file); err != nil {
@@ -182,7 +216,7 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 	}
 
 	// Créer la requête
-	req, err := http.NewRequest("POST", serverURL, &requestBody)
+	req, err := http.NewRequest("POST", serverInfo.UploadServer, &requestBody)
 	if err != nil {
 		return "", fmt.Errorf("erreur lors de la création de la requête: %w", err)
 	}
@@ -206,7 +240,6 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
-	// Log de la réponse pour le débogage
 	log.Printf("Réponse du serveur pour l'upload: %s", string(body))
 
 	// Décoder la réponse JSON
@@ -216,20 +249,27 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 	}
 
 	// Vérifier si l'upload a réussi
-	if !response.Success {
-		return "", fmt.Errorf("l'upload a échoué avec le statut: %d", response.Status)
+	if response.Success != "yes" {
+		return "", fmt.Errorf("l'upload a échoué, success: %s", response.Success)
 	}
 
-	// Convertir le time_hash en string
-	timeHash := strconv.FormatInt(response.TimeHash, 10)
+	// Vérifier si le nom du fichier est vide
+	if response.FileName == "" {
+		return "", fmt.Errorf("le serveur a retourné un nom de fichier vide")
+	}
 
-	return timeHash, nil
+	return response.FileName, nil
 }
 
 // finalizeUpload finalise l'upload et obtient le code du fichier
-func (n *NetuUploader) finalizeUpload(filename, title, timeHash string) (string, error) {
+func (n *NetuUploader) finalizeUpload(fileName, title string, serverInfo *ServerInfo) (string, error) {
 	// Utiliser netu.tv pour les appels API
-	url := fmt.Sprintf("https://netu.tv/api/file/create?key=%s&name=%s&description=%s&time_hash=%s", n.ApiKey, filename, title, timeHash)
+	url := fmt.Sprintf("https://netu.tv/api/file/add?key=%s&name=%s&server=%s&file_name=%s&server_id=%s",
+		n.ApiKey,
+		title,
+		serverInfo.UploadServer,
+		fileName,
+		serverInfo.ServerID)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -241,13 +281,12 @@ func (n *NetuUploader) finalizeUpload(filename, title, timeHash string) (string,
 		return "", fmt.Errorf("le serveur a retourné un code non-200: %d", resp.StatusCode)
 	}
 
-	// Lire le corps de la réponse pour le débogage
+	// Lire le corps de la réponse
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
-	// Log de la réponse pour le débogage
 	log.Printf("Réponse du serveur pour finaliser l'upload: %s", string(body))
 
 	// Décoder la réponse JSON
@@ -256,9 +295,9 @@ func (n *NetuUploader) finalizeUpload(filename, title, timeHash string) (string,
 		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
-	// Vérifier si l'API a retourné un succès
-	if !response.Success {
-		return "", fmt.Errorf("l'API a retourné une erreur avec le statut: %d", response.Status)
+	// Vérifier si le statut est 200 (OK)
+	if response.Status != 200 {
+		return "", fmt.Errorf("l'API a retourné un statut non-200: %d", response.Status)
 	}
 
 	// Vérifier si le code du fichier est vide
