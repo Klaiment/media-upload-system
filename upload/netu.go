@@ -38,8 +38,8 @@ type NetuUploadResponse struct {
 	} `json:"result"`
 }
 
-// NetuUploadServerResponse représente la réponse du serveur d'upload
-type NetuUploadServerResponse struct {
+// NetuUploadFileResponse représente la réponse du serveur d'upload
+type NetuUploadFileResponse struct {
 	Status   string `json:"status"`
 	Success  bool   `json:"success"`
 	TimeHash int64  `json:"time_hash"`
@@ -88,7 +88,7 @@ func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error)
 
 	log.Printf("Upload terminé avec succès, code du fichier: %s", fileCode)
 
-	// Construire les URLs
+	// Construire les URLs avec le nouveau domaine player1.streameo.me
 	directURL := fmt.Sprintf("https://player1.streameo.me/watch/%s", fileCode)
 	embedURL := fmt.Sprintf("https://player1.streameo.me/embed/%s", fileCode)
 
@@ -106,7 +106,7 @@ func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error)
 
 // getUploadServer obtient l'URL du serveur d'upload
 func (n *NetuUploader) getUploadServer() (string, error) {
-	url := fmt.Sprintf("https://netu.tv/api/file/upload_server?key=%s", n.ApiKey)
+	url := fmt.Sprintf("https://player1.streameo.me/api/file/upload_server?key=%s", n.ApiKey)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -189,7 +189,7 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 	}
 
 	// Décoder la réponse JSON
-	var response NetuUploadServerResponse
+	var response NetuUploadFileResponse
 	if err := json.Unmarshal(body, &response); err != nil {
 		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w, réponse: %s", err, string(body))
 	}
@@ -207,7 +207,7 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 
 // finalizeUpload finalise l'upload et obtient le code du fichier
 func (n *NetuUploader) finalizeUpload(filename, title, timeHash string) (string, error) {
-	url := fmt.Sprintf("https://netu.tv/api/file/create?key=%s&name=%s&description=%s&time_hash=%s", n.ApiKey, filename, title, timeHash)
+	url := fmt.Sprintf("https://player1.streameo.me/api/file/create?key=%s&name=%s&description=%s&time_hash=%s", n.ApiKey, filename, title, timeHash)
 
 	resp, err := http.Get(url)
 	if err != nil {

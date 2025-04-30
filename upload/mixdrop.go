@@ -99,7 +99,7 @@ func (m *MixDropUploader) UploadFile(filePath, title string) (*UploadResult, err
 
 	// Créer la requête
 	log.Printf("Envoi de la requête à MixDrop...")
-	req, err := http.NewRequest("POST", "https://ul.mixdrop.co/api", &requestBody)
+	req, err := http.NewRequest("POST", "https://ul.mixdrop.ag/api", &requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("erreur lors de la création de la requête: %w", err)
 	}
@@ -136,7 +136,7 @@ func (m *MixDropUploader) UploadFile(filePath, title string) (*UploadResult, err
 
 	log.Printf("Fichier uploadé avec succès sur MixDrop, fileref: %s", response.Result.FileRef)
 
-	// Construire les URLs
+	// Construire les URLs avec le nouveau domaine mixdrop.ag
 	directURL := fmt.Sprintf("https://mixdrop.ag/f/%s", response.Result.FileRef)
 	embedURL := fmt.Sprintf("https://mixdrop.ag/e/%s", response.Result.FileRef)
 
