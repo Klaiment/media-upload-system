@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"media-upload-system/api"
@@ -86,7 +87,7 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 		log.Printf("Chemin du fichier: %s", webhook.MovieFile.Path)
 		log.Printf("Taille: %d octets (%.2f GB)", webhook.MovieFile.Size, float64(webhook.MovieFile.Size)/(1024*1024*1024))
 		log.Printf("Qualité: %s", webhook.MovieFile.Quality)
-		
+
 		if webhook.MovieFile.MediaInfo != nil {
 			log.Printf("Résolution: %dx%d", webhook.MovieFile.MediaInfo.Width, webhook.MovieFile.MediaInfo.Height)
 			log.Printf("Codec vidéo: %s", webhook.MovieFile.MediaInfo.VideoCodec)
@@ -96,23 +97,23 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 				log.Printf("Sous-titres: %v", webhook.MovieFile.MediaInfo.Subtitles)
 			}
 		}
-		
+
 		if webhook.Release != nil {
 			log.Printf("Titre de la release: %s", webhook.Release.ReleaseTitle)
 			log.Printf("Indexeur: %s", webhook.Release.Indexer)
 		}
-		
+
 		// Vérifier si le film a déjà été uploadé
 		existingUpload, err := db.CheckExistingUpload(webhook.Movie.TmdbId, storage.TypeMovie, nil, nil)
 		if err != nil {
 			log.Printf("Erreur lors de la vérification d'un upload existant: %v", err)
 		}
-		
+
 		if existingUpload != nil && existingUpload.UploadStatus == storage.StatusCompleted {
 			log.Printf("Le film a déjà été uploadé: %s (ID: %d)", existingUpload.Title, existingUpload.ID)
 			return
 		}
-		
+
 		// Créer un nouvel upload
 		newUpload := &storage.Upload{
 			TmdbID:       webhook.Movie.TmdbId,
@@ -121,47 +122,47 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 			FilePath:     webhook.MovieFile.Path,
 			UploadStatus: storage.StatusPending,
 		}
-		
+
 		// Ajouter l'upload à la base de données
 		uploadID, err := db.AddUpload(newUpload)
 		if err != nil {
 			log.Printf("Erreur lors de l'ajout de l'upload à la base de données: %v", err)
 			return
 		}
-		
+
 		log.Printf("Upload ajouté à la base de données avec l'ID: %d", uploadID)
-		
+
 		// Ajouter la tâche au pool de workers
 		workerPool.AddTask(func() error {
 			return processMovieUpload(uploadID, webhook.Movie.TmdbId, webhook.Movie.Title, webhook.MovieFile.Path)
 		})
-		
+
 	} else if webhook.Series != nil && webhook.Episodes != nil {
 		log.Printf("=== SÉRIE TÉLÉCHARGÉE ===")
 		log.Printf("Titre: %s (%d)", webhook.Series.Title, webhook.Series.Year)
 		log.Printf("TMDB ID: %d", webhook.Series.TmdbId)
 		log.Printf("IMDB ID: %s", webhook.Series.ImdbId)
 		log.Printf("Chemin: %s", webhook.Series.Path)
-		
+
 		log.Printf("Épisodes:")
 		for _, episode := range webhook.Episodes {
 			log.Printf("  - S%02dE%02d: %s", episode.SeasonNumber, episode.EpisodeNumber, episode.Title)
-			
+
 			// Vérifier si l'épisode a déjà été uploadé
 			season := episode.SeasonNumber
 			episodeNum := episode.EpisodeNumber
-			
+
 			existingUpload, err := db.CheckExistingUpload(webhook.Series.TmdbId, storage.TypeSeries, &season, &episodeNum)
 			if err != nil {
 				log.Printf("Erreur lors de la vérification d'un upload existant: %v", err)
 				continue
 			}
-			
+
 			if existingUpload != nil && existingUpload.UploadStatus == storage.StatusCompleted {
 				log.Printf("L'épisode a déjà été uploadé: %s S%02dE%02d (ID: %d)", existingUpload.Title, *existingUpload.Season, *existingUpload.Episode, existingUpload.ID)
 				continue
 			}
-			
+
 			// Créer un nouvel upload
 			newUpload := &storage.Upload{
 				TmdbID:       webhook.Series.TmdbId,
@@ -172,16 +173,16 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 				FilePath:     fmt.Sprintf("%s/Season %d/%s", webhook.Series.Path, season, episode.Title),
 				UploadStatus: storage.StatusPending,
 			}
-			
+
 			// Ajouter l'upload à la base de données
 			uploadID, err := db.AddUpload(newUpload)
 			if err != nil {
 				log.Printf("Erreur lors de l'ajout de l'upload à la base de données: %v", err)
 				continue
 			}
-			
+
 			log.Printf("Upload ajouté à la base de données avec l'ID: %d", uploadID)
-			
+
 			// Ajouter la tâche au pool de workers
 			workerPool.AddTask(func() error {
 				return processEpisodeUpload(uploadID, webhook.Series.TmdbId, webhook.Series.Title, newUpload.FilePath, season, episodeNum)
@@ -195,23 +196,72 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 // Traiter l'upload d'un film
 func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) error {
 	log.Printf("Traitement de l'upload du film: %s (ID: %d)", title, uploadID)
-	
+
 	// Mettre à jour le statut
 	if err := db.UpdateUploadStatus(uploadID, storage.StatusUploading); err != nil {
 		return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
 	}
-	
-	// Uploader le fichier vers tous les hébergeurs activés
-	results := uploadMgr.UploadToAll(filePath, title)
-	
+
+	// Obtenir la liste des uploaders activés
+	enabledUploaders := uploadMgr.GetEnabledUploaders()
+
+	// Créer une tâche pour chaque uploader
+	var wg sync.WaitGroup
+	var mutex sync.Mutex
+	var results []*upload.UploadResult
+	var errors []error
+
+	for _, uploader := range enabledUploaders {
+		wg.Add(1)
+
+		// Créer une tâche pour cet uploader
+		uploaderName := uploader.Name() // Capturer la valeur pour la goroutine
+
+		// Ajouter la tâche au pool de workers
+		workerPool.AddTask(func() error {
+			defer wg.Done()
+
+			log.Printf("Démarrage de l'upload vers %s pour le film %s (ID: %d)", uploaderName, title, uploadID)
+
+			// Récupérer l'uploader par son nom
+			uploader, err := uploadMgr.GetUploader(uploaderName)
+			if err != nil {
+				log.Printf("Erreur lors de la récupération de l'uploader %s: %v", uploaderName, err)
+				mutex.Lock()
+				errors = append(errors, err)
+				mutex.Unlock()
+				return err
+			}
+
+			// Uploader le fichier
+			result, err := uploader.UploadFile(filePath, title)
+			if err != nil {
+				log.Printf("Erreur lors de l'upload vers %s: %v", uploaderName, err)
+				mutex.Lock()
+				errors = append(errors, err)
+				mutex.Unlock()
+				return err
+			}
+
+			// Ajouter le résultat à la liste
+			mutex.Lock()
+			results = append(results, result)
+			mutex.Unlock()
+
+			log.Printf("Upload vers %s terminé avec succès pour le film %s (ID: %d)", uploaderName, title, uploadID)
+			return nil
+		})
+	}
+
+	// Attendre que tous les uploads soient terminés
+	wg.Wait()
+
 	// Vérifier si au moins un upload a réussi
-	success := false
+	success := len(results) > 0
 	var discordLinks []api.HostedLink
-	
+
 	for _, result := range results {
 		if result.Success {
-			success = true
-			
 			// Ajouter le lien à la base de données
 			link := storage.HostedLink{
 				Hoster:   result.Hoster,
@@ -219,11 +269,11 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 				URL:      result.URL,
 				Embed:    result.Embed,
 			}
-			
+
 			if err := db.AddUploadLink(uploadID, link); err != nil {
 				log.Printf("Erreur lors de l'ajout du lien à la base de données: %v", err)
 			}
-			
+
 			// Ajouter le lien pour Discord
 			discordLinks = append(discordLinks, api.HostedLink{
 				Hoster:   result.Hoster,
@@ -233,7 +283,7 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 			})
 		}
 	}
-	
+
 	// Mettre à jour le statut
 	if success {
 		if err := db.UpdateUploadStatus(uploadID, storage.StatusCompleted); err != nil {
@@ -245,14 +295,14 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 		}
 		return fmt.Errorf("aucun upload n'a réussi")
 	}
-	
+
 	// Récupérer les informations du film depuis TMDB
 	movie, err := api.FetchTMDBMovie(tmdbID, cfg.TMDB.ApiKey)
 	if err != nil {
 		log.Printf("Erreur lors de la récupération des informations du film: %v", err)
 		// Continuer même en cas d'erreur
 	}
-	
+
 	// Notifier Discord
 	if movie != nil && len(discordLinks) > 0 {
 		if err := discordClient.NotifyUpload(movie, discordLinks); err != nil {
@@ -262,35 +312,35 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 	} else {
 		// Notification simplifiée si on n'a pas pu récupérer les infos du film
 		log.Printf("Envoi d'une notification Discord simplifiée")
-		
+
 		// Créer un embed simple
 		embed := api.DiscordEmbed{
-			Title:       fmt.Sprintf("🎬 Nouveau film disponible: %s", title),
-			Color:       3447003, // Bleu Discord
-			Timestamp:   time.Now().Format(time.RFC3339),
+			Title:     fmt.Sprintf("🎬 Nouveau film disponible: %s", title),
+			Color:     3447003, // Bleu Discord
+			Timestamp: time.Now().Format(time.RFC3339),
 			Footer: &api.DiscordEmbedFooter{
 				Text: "Media Upload System",
 			},
 		}
-		
+
 		// Ajouter les liens
 		var linksField api.DiscordEmbedField
 		linksField.Name = "🔗 Liens"
-		
+
 		for _, link := range discordLinks {
-			linksField.Value += fmt.Sprintf("**%s**: [Regarder](%s) | [Embed](%s)\n", 
+			linksField.Value += fmt.Sprintf("**%s**: [Regarder](%s) | [Embed](%s)\n",
 				link.Hoster, link.URL, link.Embed)
 		}
-		
+
 		embed.Fields = append(embed.Fields, linksField)
-		
+
 		// Créer le payload
 		payload := api.DiscordWebhookPayload{
 			Username:  "Media Upload Bot",
 			AvatarURL: "https://cdn-icons-png.flaticon.com/512/2503/2503508.png",
 			Embeds:    []api.DiscordEmbed{embed},
 		}
-		
+
 		// Sérialiser le payload
 		jsonPayload, err := json.Marshal(payload)
 		if err != nil {
@@ -300,13 +350,13 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 			client := &http.Client{
 				Timeout: 10 * time.Second,
 			}
-			
+
 			resp, err := client.Post(discordClient.WebhookURL, "application/json", bytes.NewBuffer(jsonPayload))
 			if err != nil {
 				log.Printf("Erreur lors de l'envoi de la requête: %v", err)
 			} else {
 				defer resp.Body.Close()
-				
+
 				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 					log.Printf("Discord a retourné un code non-2xx: %d", resp.StatusCode)
 				} else {
@@ -315,7 +365,7 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 			}
 		}
 	}
-	
+
 	log.Printf("Upload du film terminé avec succès: %s (ID: %d)", title, uploadID)
 	return nil
 }
@@ -323,24 +373,74 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 // Traiter l'upload d'un épisode
 func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, season, episode int) error {
 	log.Printf("Traitement de l'upload de l'épisode: %s S%02dE%02d (ID: %d)", title, season, episode, uploadID)
-	
+
 	// Mettre à jour le statut
 	if err := db.UpdateUploadStatus(uploadID, storage.StatusUploading); err != nil {
 		return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
 	}
-	
-	// Uploader le fichier vers tous les hébergeurs activés
+
+	// Obtenir la liste des uploaders activés
+	enabledUploaders := uploadMgr.GetEnabledUploaders()
+
+	// Créer une tâche pour chaque uploader
+	var wg sync.WaitGroup
+	var mutex sync.Mutex
+	var results []*upload.UploadResult
+	var errors []error
+
 	episodeTitle := fmt.Sprintf("%s S%02dE%02d", title, season, episode)
-	results := uploadMgr.UploadToAll(filePath, episodeTitle)
-	
+
+	for _, uploader := range enabledUploaders {
+		wg.Add(1)
+
+		// Créer une tâche pour cet uploader
+		uploaderName := uploader.Name() // Capturer la valeur pour la goroutine
+
+		// Ajouter la tâche au pool de workers
+		workerPool.AddTask(func() error {
+			defer wg.Done()
+
+			log.Printf("Démarrage de l'upload vers %s pour l'épisode %s (ID: %d)", uploaderName, episodeTitle, uploadID)
+
+			// Récupérer l'uploader par son nom
+			uploader, err := uploadMgr.GetUploader(uploaderName)
+			if err != nil {
+				log.Printf("Erreur lors de la récupération de l'uploader %s: %v", uploaderName, err)
+				mutex.Lock()
+				errors = append(errors, err)
+				mutex.Unlock()
+				return err
+			}
+
+			// Uploader le fichier
+			result, err := uploader.UploadFile(filePath, episodeTitle)
+			if err != nil {
+				log.Printf("Erreur lors de l'upload vers %s: %v", uploaderName, err)
+				mutex.Lock()
+				errors = append(errors, err)
+				mutex.Unlock()
+				return err
+			}
+
+			// Ajouter le résultat à la liste
+			mutex.Lock()
+			results = append(results, result)
+			mutex.Unlock()
+
+			log.Printf("Upload vers %s terminé avec succès pour l'épisode %s (ID: %d)", uploaderName, episodeTitle, uploadID)
+			return nil
+		})
+	}
+
+	// Attendre que tous les uploads soient terminés
+	wg.Wait()
+
 	// Vérifier si au moins un upload a réussi
-	success := false
+	success := len(results) > 0
 	var discordLinks []api.HostedLink
-	
+
 	for _, result := range results {
 		if result.Success {
-			success = true
-			
 			// Ajouter le lien à la base de données
 			link := storage.HostedLink{
 				Hoster:   result.Hoster,
@@ -348,11 +448,11 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 				URL:      result.URL,
 				Embed:    result.Embed,
 			}
-			
+
 			if err := db.AddUploadLink(uploadID, link); err != nil {
 				log.Printf("Erreur lors de l'ajout du lien à la base de données: %v", err)
 			}
-			
+
 			// Ajouter le lien pour Discord
 			discordLinks = append(discordLinks, api.HostedLink{
 				Hoster:   result.Hoster,
@@ -362,7 +462,7 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 			})
 		}
 	}
-	
+
 	// Mettre à jour le statut
 	if success {
 		if err := db.UpdateUploadStatus(uploadID, storage.StatusCompleted); err != nil {
@@ -374,7 +474,7 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 		}
 		return fmt.Errorf("aucun upload n'a réussi")
 	}
-	
+
 	// Notifier Discord
 	if len(discordLinks) > 0 {
 		if err := discordClient.NotifyEpisodeUpload(title, tmdbID, season, episode, discordLinks); err != nil {
@@ -382,7 +482,7 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 			// Continuer même en cas d'erreur
 		}
 	}
-	
+
 	log.Printf("Upload de l'épisode terminé avec succès: %s S%02dE%02d (ID: %d)", title, season, episode, uploadID)
 	return nil
 }
@@ -408,7 +508,7 @@ func main() {
 	if err != nil {
 		log.Printf("Erreur lors du chargement de la configuration: %v", err)
 		log.Printf("Création d'un fichier de configuration par défaut...")
-		
+
 		// Créer le répertoire si nécessaire
 		dir := filepath.Dir(*configPath)
 		if dir != "." && dir != "" {
@@ -416,12 +516,12 @@ func main() {
 				log.Fatalf("Erreur lors de la création du répertoire: %v", err)
 			}
 		}
-		
+
 		// Créer le fichier de configuration
 		if err := config.CreateDefaultConfig(*configPath); err != nil {
 			log.Fatalf("Erreur lors de la création du fichier de configuration: %v", err)
 		}
-		
+
 		// Recharger la configuration
 		cfg, err = config.LoadConfig(*configPath)
 		if err != nil {
@@ -447,7 +547,7 @@ func main() {
 
 	// Initialiser le gestionnaire d'uploads
 	uploadMgr = upload.NewManager()
-	
+
 	// Enregistrer les uploaders
 	if cfg.Uploaders.Netu.Enabled {
 		netuUploader := upload.NewNetuUploader(cfg.Uploaders.Netu.ApiKey, true)
@@ -458,7 +558,7 @@ func main() {
 		mixdropUploader := upload.NewMixDropUploader(cfg.Uploaders.MixDrop.Email, cfg.Uploaders.MixDrop.ApiKey, true)
 		uploadMgr.RegisterUploader(mixdropUploader)
 	}
-	
+
 	// Vous pouvez ajouter d'autres uploaders ici
 	// Par exemple:
 	// if cfg.Uploaders.Uptobox.Enabled {
@@ -468,7 +568,7 @@ func main() {
 
 	// Initialiser le client API
 	apiClient = api.NewClient(cfg.API.Endpoint)
-	
+
 	// Initialiser le client Discord
 	discordClient = api.NewDiscordWebhook(cfg.Discord.WebhookURL)
 
