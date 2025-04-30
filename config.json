@@ -28,5 +28,11 @@
   },
   "tmdb": {
     "apiKey": "bfdc88d1d7b360fca90425956dcb6951"
+  },
+  "strapi": {
+    "enabled": true,
+    "baseUrl": "http://localhost:1337",
+    "username": "admin",
+    "password": "Clement123!"
   }
 }
