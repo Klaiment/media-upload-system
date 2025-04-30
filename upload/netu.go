@@ -40,7 +40,9 @@ type NetuUploadResponse struct {
 	Status int    `json:"status"`
 	Msg    string `json:"msg"`
 	Result struct {
-		FileCode string `json:"file_code"`
+		FileCode      string `json:"file_code"`
+		FolderID      string `json:"folder_id"`
+		FileCodeEmbed string `json:"file_code_embed"`
 	} `json:"result"`
 }
 
@@ -86,16 +88,16 @@ func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error)
 
 	// Étape 3: Finaliser l'upload
 	log.Printf("Étape 3: Finalisation de l'upload...")
-	fileCode, err := n.finalizeUpload(fileName, title, serverInfo)
+	fileCode, fileCodeEmbed, err := n.finalizeUpload(fileName, title, serverInfo)
 	if err != nil {
 		return nil, fmt.Errorf("échec de la finalisation de l'upload: %w", err)
 	}
 
-	log.Printf("Upload terminé avec succès, code du fichier: %s", fileCode)
+	log.Printf("Upload terminé avec succès, code du fichier: %s, code embed: %s", fileCode, fileCodeEmbed)
 
-	// Construire les URLs avec le domaine player1.streameo.me pour le player
-	directURL := fmt.Sprintf("https://player1.streameo.me/watch/%s", fileCode)
-	embedURL := fmt.Sprintf("https://player1.streameo.me/embed/%s", fileCode)
+	// Construire les URLs avec le nouveau format pour l'embed
+	directURL := fmt.Sprintf("https://player1.streameo.me/e/%s", fileCodeEmbed)
+	embedURL := fmt.Sprintf("https://player1.streameo.me/e/%s", fileCodeEmbed)
 
 	// Créer le résultat
 	result := &UploadResult{
@@ -263,7 +265,7 @@ func (n *NetuUploader) uploadToServer(filePath string, serverInfo *ServerInfo) (
 }
 
 // finalizeUpload finalise l'upload et obtient le code du fichier
-func (n *NetuUploader) finalizeUpload(fileName, title string, serverInfo *ServerInfo) (string, error) {
+func (n *NetuUploader) finalizeUpload(fileName, title string, serverInfo *ServerInfo) (string, string, error) {
 	// Encoder les paramètres pour l'URL
 	params := url.Values{}
 	params.Add("key", n.ApiKey)
@@ -278,37 +280,42 @@ func (n *NetuUploader) finalizeUpload(fileName, title string, serverInfo *Server
 
 	resp, err := http.Get(apiURL)
 	if err != nil {
-		return "", fmt.Errorf("erreur lors de la requête HTTP: %w", err)
+		return "", "", fmt.Errorf("erreur lors de la requête HTTP: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Lire le corps de la réponse
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
+		return "", "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
 	log.Printf("Réponse du serveur pour finaliser l'upload: %s", string(body))
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("le serveur a retourné un code non-200: %d, réponse: %s", resp.StatusCode, string(body))
+		return "", "", fmt.Errorf("le serveur a retourné un code non-200: %d, réponse: %s", resp.StatusCode, string(body))
 	}
 
 	// Décoder la réponse JSON
 	var response NetuUploadResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+		return "", "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
 	// Vérifier si le statut est 200 (OK)
 	if response.Status != 200 {
-		return "", fmt.Errorf("l'API a retourné un statut non-200: %d", response.Status)
+		return "", "", fmt.Errorf("l'API a retourné un statut non-200: %d", response.Status)
 	}
 
 	// Vérifier si le code du fichier est vide
 	if response.Result.FileCode == "" {
-		return "", fmt.Errorf("l'API a retourné un code de fichier vide")
+		return "", "", fmt.Errorf("l'API a retourné un code de fichier vide")
 	}
 
-	return response.Result.FileCode, nil
+	// Vérifier si le code embed du fichier est vide
+	if response.Result.FileCodeEmbed == "" {
+		return "", "", fmt.Errorf("l'API a retourné un code embed vide")
+	}
+
+	return response.Result.FileCode, response.Result.FileCodeEmbed, nil
 }
