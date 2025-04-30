@@ -137,8 +137,8 @@ func (m *MixDropUploader) UploadFile(filePath, title string) (*UploadResult, err
 	log.Printf("Fichier uploadé avec succès sur MixDrop, fileref: %s", response.Result.FileRef)
 
 	// Construire les URLs
-	directURL := fmt.Sprintf("https://mixdrop.co/f/%s", response.Result.FileRef)
-	embedURL := fmt.Sprintf("https://mixdrop.co/e/%s", response.Result.FileRef)
+	directURL := fmt.Sprintf("https://mixdrop.ag/f/%s", response.Result.FileRef)
+	embedURL := fmt.Sprintf("https://mixdrop.ag/e/%s", response.Result.FileRef)
 
 	// Créer le résultat
 	result := &UploadResult{

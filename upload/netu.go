@@ -8,7 +8,6 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,38 +20,32 @@ type NetuUploader struct {
 	Enabled bool
 }
 
-// NetuUploadServerResponse représente la réponse de l'API pour obtenir un serveur d'upload
+// NetuUploadServerResponse représente la réponse de l'API pour obtenir le serveur d'upload
 type NetuUploadServerResponse struct {
-	Msg    string `json:"msg"`
-	Status int    `json:"status"`
-	Result struct {
-		UploadServer string `json:"upload_server"`
-		ServerID     string `json:"server_id"`
-		Hash         string `json:"hash"`
-		TimeHash     int64  `json:"time_hash"`
-		UserID       string `json:"userid"`
-		KeyHash      string `json:"key_hash"`
+	Status  string `json:"status"`
+	Success bool   `json:"success"`
+	Result  struct {
+		URL string `json:"url"`
 	} `json:"result"`
 }
 
-// NetuUploadResponse représente la réponse après l'upload du fichier
+// NetuUploadResponse représente la réponse de l'API après l'upload du fichier
 type NetuUploadResponse struct {
-	Success  string `json:"success"`
-	FileName string `json:"file_name"`
-}
-
-// NetuFinalizeResponse représente la réponse finale après l'ajout du fichier
-type NetuFinalizeResponse struct {
-	Msg    string `json:"msg"`
-	Status int    `json:"status"`
-	Result struct {
-		FileCode      string `json:"file_code"`
-		FolderID      string `json:"folder_id"`
-		FileCodeEmbed string `json:"file_code_embed"`
+	Status  string `json:"status"`
+	Success bool   `json:"success"`
+	Result  struct {
+		FileCode string `json:"file_code"`
 	} `json:"result"`
 }
 
-// NewNetuUploader crée un nouvel uploader Netu
+// NetuUploadServerResponse représente la réponse du serveur d'upload
+type NetuUploadServerResponse struct {
+	Status   string `json:"status"`
+	Success  bool   `json:"success"`
+	TimeHash int64  `json:"time_hash"`
+}
+
+// NewNetuUploader crée un nouvel uploader Netu.tv
 func NewNetuUploader(apiKey string, enabled bool) *NetuUploader {
 	return &NetuUploader{
 		ApiKey:  apiKey,
@@ -70,44 +63,40 @@ func (n *NetuUploader) IsEnabled() bool {
 	return n.Enabled
 }
 
-// UploadFile upload un fichier vers Netu.tv en suivant les 3 étapes
+// UploadFile upload un fichier vers Netu.tv
 func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error) {
-	// Vérifier que le fichier existe
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("le fichier n'existe pas: %s", filePath)
-	}
-
-	// Étape 1: Obtenir l'URL d'upload
+	// Étape 1: Obtenir le serveur d'upload
+	log.Printf("Étape 1: Obtention du serveur d'upload...")
 	uploadServer, err := n.getUploadServer()
 	if err != nil {
 		return nil, fmt.Errorf("échec de l'obtention du serveur d'upload: %w", err)
 	}
 
-	// Étape 2: Uploader le fichier
-	uploadResult, err := n.uploadToServer(uploadServer, filePath)
+	// Étape 2: Uploader le fichier sur le serveur
+	log.Printf("Étape 2: Upload du fichier sur le serveur %s...", uploadServer)
+	timeHash, err := n.uploadToServer(filePath, uploadServer)
 	if err != nil {
 		return nil, fmt.Errorf("échec de l'upload du fichier: %w", err)
 	}
 
 	// Étape 3: Finaliser l'upload
-	finalResult, err := n.finalizeUpload(
-		title,
-		uploadServer.Result.UploadServer,
-		uploadServer.Result.ServerID,
-		uploadResult.FileName,
-	)
+	log.Printf("Étape 3: Finalisation de l'upload...")
+	fileCode, err := n.finalizeUpload(filepath.Base(filePath), title, timeHash)
 	if err != nil {
 		return nil, fmt.Errorf("échec de la finalisation de l'upload: %w", err)
 	}
 
-	directURL := fmt.Sprintf("https://player1.streameo.me/watch/%s", finalResult.Result.FileCode)
-	embedURL := fmt.Sprintf("https://player1.streameo.me/embed/%s", finalResult.Result.FileCode)
+	log.Printf("Upload terminé avec succès, code du fichier: %s", fileCode)
+
+	// Construire les URLs
+	directURL := fmt.Sprintf("https://player1.streameo.me/watch/%s", fileCode)
+	embedURL := fmt.Sprintf("https://player1.streameo.me/embed/%s", fileCode)
 
 	// Créer le résultat
 	result := &UploadResult{
 		Success:  true,
 		Hoster:   "netu",
-		FileCode: finalResult.Result.FileCode,
+		FileCode: fileCode,
 		URL:      directURL,
 		Embed:    embedURL,
 	}
@@ -115,165 +104,129 @@ func (n *NetuUploader) UploadFile(filePath, title string) (*UploadResult, error)
 	return result, nil
 }
 
-// getUploadServer obtient l'URL du serveur d'upload (étape 1)
-func (n *NetuUploader) getUploadServer() (*NetuUploadServerResponse, error) {
-	log.Printf("Étape 1: Obtention du serveur d'upload...")
+// getUploadServer obtient l'URL du serveur d'upload
+func (n *NetuUploader) getUploadServer() (string, error) {
+	url := fmt.Sprintf("https://netu.tv/api/file/upload_server?key=%s", n.ApiKey)
 
-	apiURL := fmt.Sprintf("https://netu.tv/api/file/upload_server?key=%s", n.ApiKey)
-
-	// Créer un client HTTP avec timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Get(apiURL)
+	resp, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la requête HTTP: %w", err)
+		return "", fmt.Errorf("erreur lors de la requête HTTP: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("l'API a retourné un code non-200: %d", resp.StatusCode)
+		return "", fmt.Errorf("le serveur a retourné un code non-200: %d", resp.StatusCode)
 	}
 
-	var result NetuUploadServerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	var response NetuUploadServerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
-	if result.Status != 200 {
-		return nil, fmt.Errorf("l'API a retourné une erreur: %s", result.Msg)
+	if !response.Success {
+		return "", fmt.Errorf("l'API a retourné une erreur: %s", response.Status)
 	}
 
-	log.Printf("Serveur d'upload obtenu: %s", result.Result.UploadServer)
-	return &result, nil
+	return response.Result.URL, nil
 }
 
-// uploadToServer upload le fichier vers le serveur d'upload (étape 2)
-func (n *NetuUploader) uploadToServer(serverInfo *NetuUploadServerResponse, filePath string) (*NetuUploadResponse, error) {
-	log.Printf("Étape 2: Upload du fichier %s vers le serveur...", filePath)
+// uploadToServer upload le fichier sur le serveur
+func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error) {
+	// Vérifier si le fichier existe
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return "", fmt.Errorf("le fichier n'existe pas: %s", filePath)
+	}
 
+	// Ouvrir le fichier
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de l'ouverture du fichier: %w", err)
+		return "", fmt.Errorf("erreur lors de l'ouverture du fichier: %w", err)
 	}
 	defer file.Close()
 
 	// Créer un buffer pour le corps de la requête
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	// Ajouter les paramètres du formulaire
-	params := map[string]string{
-		"hash":      serverInfo.Result.Hash,
-		"time_hash": strconv.FormatInt(serverInfo.Result.TimeHash, 10),
-		"userid":    serverInfo.Result.UserID,
-		"key_hash":  serverInfo.Result.KeyHash,
-		"upload":    "1",
-	}
-
-	for key, val := range params {
-		if err := writer.WriteField(key, val); err != nil {
-			return nil, fmt.Errorf("erreur lors de l'écriture du champ %s: %w", key, err)
-		}
-	}
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
 
 	// Ajouter le fichier
-	part, err := writer.CreateFormFile("Filedata", filepath.Base(filePath))
+	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la création du champ de fichier: %w", err)
+		return "", fmt.Errorf("erreur lors de la création du champ file: %w", err)
 	}
 
-	// Copier le fichier dans le formulaire
 	if _, err := io.Copy(part, file); err != nil {
-		return nil, fmt.Errorf("erreur lors de la copie du fichier: %w", err)
+		return "", fmt.Errorf("erreur lors de la copie du fichier: %w", err)
 	}
 
-	// Fermer le writer pour finaliser le formulaire
+	// Fermer le writer
 	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("erreur lors de la fermeture du writer: %w", err)
+		return "", fmt.Errorf("erreur lors de la fermeture du writer: %w", err)
 	}
 
-	// Créer la requête HTTP
-	req, err := http.NewRequest("POST", serverInfo.Result.UploadServer, body)
+	// Créer la requête
+	req, err := http.NewRequest("POST", serverURL, &requestBody)
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la création de la requête: %w", err)
+		return "", fmt.Errorf("erreur lors de la création de la requête: %w", err)
 	}
 
-	// Définir les headers
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	// Créer un client HTTP avec timeout plus long pour l'upload
+	// Envoyer la requête
 	client := &http.Client{
-		Timeout: 3 * time.Hour, // Timeout très long pour les gros fichiers
+		Timeout: 24 * time.Hour, // Timeout très long pour les gros fichiers
 	}
 
-	// Envoyer la requête
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
+		return "", fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("le serveur d'upload a retourné un code non-200: %d", resp.StatusCode)
+	// Lire la réponse
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
-	// Décoder la réponse
-	var result NetuUploadResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	// Décoder la réponse JSON
+	var response NetuUploadServerResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w, réponse: %s", err, string(body))
 	}
 
-	if result.Success != "yes" {
-		return nil, fmt.Errorf("l'upload a échoué")
+	// Vérifier si l'upload a réussi
+	if !response.Success {
+		return "", fmt.Errorf("l'upload a échoué: %s", response.Status)
 	}
 
-	log.Printf("Fichier uploadé avec succès, file_name: %s", result.FileName)
-	return &result, nil
+	// Convertir le time_hash en string
+	timeHash := strconv.FormatInt(response.TimeHash, 10)
+
+	return timeHash, nil
 }
 
-// finalizeUpload finalise l'upload en envoyant les informations au serveur principal (étape 3)
-func (n *NetuUploader) finalizeUpload(name, server, serverID, fileName string) (*NetuFinalizeResponse, error) {
-	log.Printf("Étape 3: Finalisation de l'upload...")
+// finalizeUpload finalise l'upload et obtient le code du fichier
+func (n *NetuUploader) finalizeUpload(filename, title, timeHash string) (string, error) {
+	url := fmt.Sprintf("https://netu.tv/api/file/create?key=%s&name=%s&description=%s&time_hash=%s", n.ApiKey, filename, title, timeHash)
 
-	// Encoder les paramètres dans l'URL
-	params := url.Values{}
-	params.Add("key", n.ApiKey)
-	params.Add("name", name)
-	params.Add("server", server)
-	params.Add("server_id", serverID)
-	params.Add("file_name", fileName)
-
-	// Construire l'URL
-	finalizeURL := fmt.Sprintf("https://netu.tv/api/file/add?%s", params.Encode())
-
-	// Créer un client HTTP avec timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Envoyer la requête POST
-	resp, err := client.Post(finalizeURL, "application/json", nil)
+	resp, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la requête HTTP: %w", err)
+		return "", fmt.Errorf("erreur lors de la requête HTTP: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("l'API a retourné un code non-200: %d", resp.StatusCode)
+		return "", fmt.Errorf("le serveur a retourné un code non-200: %d", resp.StatusCode)
 	}
 
-	// Décoder la réponse
-	var result NetuFinalizeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	var response NetuUploadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
-	if result.Status != 200 {
-		return nil, fmt.Errorf("l'API a retourné une erreur: %s", result.Msg)
+	if !response.Success {
+		return "", fmt.Errorf("l'API a retourné une erreur: %s", response.Status)
 	}
 
-	log.Printf("Upload finalisé avec succès, file_code: %s", result.Result.FileCode)
-	return &result, nil
+	return response.Result.FileCode, nil
 }
