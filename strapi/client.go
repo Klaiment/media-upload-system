@@ -4,89 +4,81 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
-// StrapiClient gère les interactions avec l'API Strapi
+// StrapiClient représente un client pour l'API Strapi
 type StrapiClient struct {
-	BaseURL   string
-	AuthToken string
-	Username  string
-	Password  string
+	BaseURL    string
+	Username   string
+	Password   string
+	Token      string
+	HTTPClient *http.Client
 }
 
-// LoginResponse représente la réponse de l'API lors de la connexion
+// LoginResponse représente la réponse de l'API Strapi pour la connexion
 type LoginResponse struct {
-	JWT  string `json:"jwt"`
-	User struct {
-		ID         int    `json:"id"`
-		DocumentID string `json:"documentId"`
-		Username   string `json:"username"`
-		Email      string `json:"email"`
-	} `json:"user"`
+	JWT string `json:"jwt"`
 }
 
-// GenderResponse représente la réponse de l'API pour les genres
-type GenderResponse struct {
+// Genre représente un genre dans Strapi
+type Genre struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// GenreResponse représente la réponse de l'API Strapi pour les genres
+type GenreResponse struct {
 	Data []struct {
-		ID         int    `json:"id"`
-		DocumentID string `json:"documentId"`
-		Name       string `json:"name"`
-		Slug       string `json:"slug"`
-	} `json:"data"`
-	Meta struct {
-		Pagination struct {
-			Page      int `json:"page"`
-			PageSize  int `json:"pageSize"`
-			PageCount int `json:"pageCount"`
-			Total     int `json:"total"`
-		} `json:"pagination"`
-	} `json:"meta"`
-}
-
-// CreateFicheRequest représente la requête pour créer une nouvelle fiche
-type CreateFicheRequest struct {
-	Data struct {
-		Title      string   `json:"title"`
-		Categories []string `json:"categories"`
-		Genders    []string `json:"genders"`
-		TmdbID     string   `json:"tmdb_id"`
-		TmdbData   string   `json:"tmdb_data"`
-		Links      []string `json:"links"`
-		Slug       string   `json:"slug"`
-		Slider     bool     `json:"slider"`
+		ID         int `json:"id"`
+		Attributes struct {
+			Name string `json:"name"`
+		} `json:"attributes"`
 	} `json:"data"`
 }
 
-// CreateLinkRequest représente la requête pour créer un nouveau lien
-type CreateLinkRequest struct {
+// FicheResponse représente la réponse de l'API Strapi pour la création d'une fiche
+type FicheResponse struct {
 	Data struct {
-		Link  string `json:"link"`
-		Fiche string `json:"fiche"`
+		ID int `json:"id"`
 	} `json:"data"`
 }
 
-// CreateLinkResponse représente la réponse de l'API lors de la création d'un lien
-type CreateLinkResponse struct {
-	Data struct {
-		ID         int    `json:"id"`
-		DocumentID string `json:"documentId"`
-		Link       string `json:"link"`
+// FicheSearchResponse représente la réponse de l'API Strapi pour la recherche de fiches
+type FicheSearchResponse struct {
+	Data []struct {
+		ID int `json:"id"`
 	} `json:"data"`
 }
 
-// CreateFicheResponse représente la réponse de l'API lors de la création d'une fiche
-type CreateFicheResponse struct {
+// LinkResponse représente la réponse de l'API Strapi pour la création d'un lien
+type LinkResponse struct {
 	Data struct {
-		ID         int    `json:"id"`
-		DocumentID string `json:"documentId"`
-		Title      string `json:"title"`
-		Slug       string `json:"slug"`
+		ID int `json:"id"`
 	} `json:"data"`
+}
+
+// ErrorResponse représente une réponse d'erreur de l'API Strapi
+type ErrorResponse struct {
+	Data  interface{} `json:"data"`
+	Error struct {
+		Status  int    `json:"status"`
+		Name    string `json:"name"`
+		Message string `json:"message"`
+		Details struct {
+			Errors []struct {
+				Path    []string `json:"path"`
+				Message string   `json:"message"`
+				Name    string   `json:"name"`
+				Value   string   `json:"value"`
+			} `json:"errors"`
+		} `json:"details"`
+	} `json:"error"`
 }
 
 // NewStrapiClient crée un nouveau client Strapi
@@ -95,26 +87,27 @@ func NewStrapiClient(baseURL, username, password string) *StrapiClient {
 		BaseURL:  baseURL,
 		Username: username,
 		Password: password,
+		HTTPClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
-// Login se connecte à l'API Strapi et récupère un token JWT
-func (s *StrapiClient) Login() error {
-	log.Printf("Connexion à l'API Strapi (%s)...", s.BaseURL)
-
+// Login se connecte à l'API Strapi et obtient un token JWT
+func (c *StrapiClient) Login() error {
 	// Préparer les données de connexion
-	loginData := map[string]string{
-		"identifier": s.Username,
-		"password":   s.Password,
+	data := map[string]string{
+		"identifier": c.Username,
+		"password":   c.Password,
 	}
 
-	jsonData, err := json.Marshal(loginData)
+	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("erreur lors de la sérialisation des données de connexion: %w", err)
 	}
 
 	// Créer la requête
-	req, err := http.NewRequest("POST", s.BaseURL+"/api/auth/local", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", c.BaseURL+"/api/auth/local", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("erreur lors de la création de la requête: %w", err)
 	}
@@ -122,241 +115,90 @@ func (s *StrapiClient) Login() error {
 	req.Header.Set("Content-Type", "application/json")
 
 	// Envoyer la requête
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	log.Printf("Envoi de la requête de connexion à %s", s.BaseURL+"/api/auth/local")
-	resp, err := client.Do(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		log.Printf("ERREUR réseau lors de la connexion à Strapi: %v", err)
 		return fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Lire le corps de la réponse pour le journaliser en cas d'erreur
-	body, err := ioutil.ReadAll(resp.Body)
+	// Lire la réponse
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("ERREUR lors de la lecture de la réponse: %v", err)
 		return fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
+	// Vérifier si la requête a réussi
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("ERREUR lors de la connexion à Strapi: code %d, réponse: %s", resp.StatusCode, string(body))
 		return fmt.Errorf("erreur lors de la connexion: code %d, réponse: %s", resp.StatusCode, string(body))
 	}
 
-	// Décoder la réponse
+	// Décoder la réponse JSON
 	var loginResp LoginResponse
 	if err := json.Unmarshal(body, &loginResp); err != nil {
-		log.Printf("ERREUR lors du décodage de la réponse: %v, réponse: %s", err, string(body))
-		return fmt.Errorf("erreur lors du décodage de la réponse: %w", err)
+		return fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
 	// Stocker le token
-	s.AuthToken = loginResp.JWT
-	log.Printf("Connexion réussie à l'API Strapi (utilisateur: %s)", loginResp.User.Username)
+	c.Token = loginResp.JWT
 
 	return nil
 }
 
-// GetGenders récupère la liste des genres disponibles
-func (s *StrapiClient) GetGenders() (*GenderResponse, error) {
-	log.Printf("Récupération des genres depuis l'API Strapi...")
-
-	// Créer la requête
-	req, err := http.NewRequest("GET", s.BaseURL+"/api/genders", nil)
-	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la création de la requête: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+s.AuthToken)
-
-	// Envoyer la requête
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("erreur lors de la récupération des genres: code %d", resp.StatusCode)
-	}
-
-	// Décoder la réponse
-	var genderResp GenderResponse
-	if err := json.NewDecoder(resp.Body).Decode(&genderResp); err != nil {
-		return nil, fmt.Errorf("erreur lors du décodage de la réponse: %w", err)
-	}
-
-	log.Printf("Récupération de %d genres depuis l'API Strapi", len(genderResp.Data))
-
-	return &genderResp, nil
-}
-
-// CreateFiche crée une nouvelle fiche dans Strapi
-func (s *StrapiClient) CreateFiche(title, tmdbID, tmdbData string, genderIDs []string) (*CreateFicheResponse, error) {
-	log.Printf("Création d'une nouvelle fiche pour %s (TMDB ID: %s)...", title, tmdbID)
-
-	// Préparer les données
-	var req CreateFicheRequest
-	req.Data.Title = title
-	req.Data.TmdbID = tmdbID
-	req.Data.TmdbData = tmdbData
-	req.Data.Genders = genderIDs
-	req.Data.Categories = []string{}
-	req.Data.Links = []string{}
-	req.Data.Slider = false
-
-	// Générer le slug à partir du titre
-	req.Data.Slug = generateSlug(title)
-
-	// Sérialiser en JSON
-	jsonData, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la sérialisation des données: %w", err)
-	}
-
-	// Créer la requête
-	httpReq, err := http.NewRequest("POST", s.BaseURL+"/api/fiches", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la création de la requête: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+s.AuthToken)
-
-	// Envoyer la requête
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	log.Printf("Envoi de la requête de création de fiche à %s", s.BaseURL+"/api/fiches")
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		log.Printf("ERREUR réseau lors de la création de la fiche: %v", err)
-		return nil, fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Lire le corps de la réponse pour le journaliser en cas d'erreur
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("ERREUR lors de la lecture de la réponse: %v", err)
-		return nil, fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		log.Printf("ERREUR lors de la création de la fiche: code %d, réponse: %s", resp.StatusCode, string(body))
-		return nil, fmt.Errorf("erreur lors de la création de la fiche: code %d, réponse: %s", resp.StatusCode, string(body))
-	}
-
-	// Décoder la réponse
-	var ficheResp CreateFicheResponse
-	if err := json.Unmarshal(body, &ficheResp); err != nil {
-		log.Printf("ERREUR lors du décodage de la réponse: %v, réponse: %s", err, string(body))
-		return nil, fmt.Errorf("erreur lors du décodage de la réponse: %w", err)
-	}
-
-	log.Printf("Fiche créée avec succès (ID: %s)", ficheResp.Data.DocumentID)
-
-	return &ficheResp, nil
-}
-
-// CreateLink crée un nouveau lien dans Strapi
-func (s *StrapiClient) CreateLink(link, ficheDocumentID string) (*CreateLinkResponse, error) {
-	log.Printf("Création d'un nouveau lien pour la fiche %s...", ficheDocumentID)
-
-	// Préparer les données
-	var req CreateLinkRequest
-	req.Data.Link = link
-	req.Data.Fiche = ficheDocumentID
-
-	// Sérialiser en JSON
-	jsonData, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la sérialisation des données: %w", err)
-	}
-
-	// Créer la requête
-	httpReq, err := http.NewRequest("POST", s.BaseURL+"/api/links", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la création de la requête: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+s.AuthToken)
-
-	// Envoyer la requête
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	log.Printf("Envoi de la requête de création de lien à %s", s.BaseURL+"/api/links")
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		log.Printf("ERREUR réseau lors de la création du lien: %v", err)
-		return nil, fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Lire le corps de la réponse pour le journaliser en cas d'erreur
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("ERREUR lors de la lecture de la réponse: %v", err)
-		return nil, fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		log.Printf("ERREUR lors de la création du lien: code %d, réponse: %s", resp.StatusCode, string(body))
-		return nil, fmt.Errorf("erreur lors de la création du lien: code %d, réponse: %s", resp.StatusCode, string(body))
-	}
-
-	// Décoder la réponse
-	var linkResp CreateLinkResponse
-	if err := json.Unmarshal(body, &linkResp); err != nil {
-		log.Printf("ERREUR lors du décodage de la réponse: %v, réponse: %s", err, string(body))
-		return nil, fmt.Errorf("erreur lors du décodage de la réponse: %w", err)
-	}
-
-	log.Printf("Lien créé avec succès (ID: %s)", linkResp.Data.DocumentID)
-
-	return &linkResp, nil
-}
-
-// FindGenderIDsByNames trouve les IDs des genres par leurs noms
-func (s *StrapiClient) FindGenderIDsByNames(genreNames []string) ([]string, error) {
-	// Récupérer tous les genres
-	genders, err := s.GetGenders()
-	if err != nil {
-		return nil, err
-	}
-
-	// Créer une map pour faciliter la recherche
-	genderMap := make(map[string]string)
-	for _, gender := range genders.Data {
-		genderMap[strings.ToLower(gender.Name)] = gender.DocumentID
-	}
-
-	// Trouver les IDs correspondants
-	var genderIDs []string
-	for _, name := range genreNames {
-		if id, ok := genderMap[strings.ToLower(name)]; ok {
-			genderIDs = append(genderIDs, id)
-		} else {
-			log.Printf("Genre non trouvé: %s", name)
+// GetGenres récupère la liste des genres depuis Strapi
+func (c *StrapiClient) GetGenres() ([]Genre, error) {
+	// Vérifier si le token est disponible
+	if c.Token == "" {
+		if err := c.Login(); err != nil {
+			return nil, fmt.Errorf("erreur lors de la connexion: %w", err)
 		}
 	}
 
-	return genderIDs, nil
+	// Créer la requête
+	req, err := http.NewRequest("GET", c.BaseURL+"/api/genres", nil)
+	if err != nil {
+		return nil, fmt.Errorf("erreur lors de la création de la requête: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+
+	// Envoyer la requête
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Lire la réponse
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
+	}
+
+	// Vérifier si la requête a réussi
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("erreur lors de la récupération des genres: code %d, réponse: %s", resp.StatusCode, string(body))
+	}
+
+	// Décoder la réponse JSON
+	var genreResp GenreResponse
+	if err := json.Unmarshal(body, &genreResp); err != nil {
+		return nil, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	}
+
+	// Convertir la réponse en liste de genres
+	genres := make([]Genre, 0, len(genreResp.Data))
+	for _, g := range genreResp.Data {
+		genres = append(genres, Genre{
+			ID:   g.ID,
+			Name: g.Attributes.Name,
+		})
+	}
+
+	return genres, nil
 }
 
-// generateSlug génère un slug à partir d'un titre
-func generateSlug(title string) string {
+// CreateSlug crée un slug à partir d'un titre
+func CreateSlug(title string) string {
 	// Convertir en minuscules
 	slug := strings.ToLower(title)
 
@@ -380,4 +222,241 @@ func generateSlug(title string) string {
 	slug = strings.Trim(slug, "-")
 
 	return slug
+}
+
+// SearchFicheByTMDBID recherche une fiche par son ID TMDB
+func (c *StrapiClient) SearchFicheByTMDBID(tmdbID int) (int, error) {
+	// Vérifier si le token est disponible
+	if c.Token == "" {
+		if err := c.Login(); err != nil {
+			return 0, fmt.Errorf("erreur lors de la connexion: %w", err)
+		}
+	}
+
+	// Créer l'URL avec le filtre TMDB ID
+	apiURL := fmt.Sprintf("%s/api/fiches?filters[tmdb_id][$eq]=%d", c.BaseURL, tmdbID)
+
+	// Créer la requête
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("erreur lors de la création de la requête: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+
+	// Envoyer la requête
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Lire la réponse
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
+	}
+
+	// Vérifier si la requête a réussi
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("erreur lors de la recherche de la fiche: code %d, réponse: %s", resp.StatusCode, string(body))
+	}
+
+	// Décoder la réponse JSON
+	var searchResp FicheSearchResponse
+	if err := json.Unmarshal(body, &searchResp); err != nil {
+		return 0, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	}
+
+	// Vérifier si une fiche a été trouvée
+	if len(searchResp.Data) == 0 {
+		return 0, nil // Aucune fiche trouvée
+	}
+
+	// Retourner l'ID de la première fiche trouvée
+	return searchResp.Data[0].ID, nil
+}
+
+// CreateFiche crée une nouvelle fiche dans Strapi
+func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
+	// Vérifier si le token est disponible
+	if c.Token == "" {
+		if err := c.Login(); err != nil {
+			return "", fmt.Errorf("erreur lors de la connexion: %w", err)
+		}
+	}
+
+	// Vérifier si la fiche existe déjà
+	existingID, err := c.SearchFicheByTMDBID(tmdbID)
+	if err != nil {
+		log.Printf("Erreur lors de la recherche de la fiche existante: %v", err)
+		// Continuer malgré l'erreur
+	}
+
+	if existingID > 0 {
+		log.Printf("Fiche déjà existante avec l'ID: %d", existingID)
+		return fmt.Sprintf("%d", existingID), nil
+	}
+
+	// Créer un slug à partir du titre
+	slug := CreateSlug(title)
+
+	// Préparer les données de la fiche
+	data := map[string]interface{}{
+		"data": map[string]interface{}{
+			"title":   title,
+			"slug":    slug,
+			"tmdb_id": tmdbID,
+		},
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la sérialisation des données de la fiche: %w", err)
+	}
+
+	// Créer la requête
+	req, err := http.NewRequest("POST", c.BaseURL+"/api/fiches", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la création de la requête: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+
+	// Envoyer la requête
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Lire la réponse
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
+	}
+
+	// Vérifier si la requête a réussi
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		// Essayer de décoder la réponse d'erreur
+		var errorResp ErrorResponse
+		if jsonErr := json.Unmarshal(body, &errorResp); jsonErr == nil {
+			// Si c'est une erreur d'unicité sur le slug, essayer avec un slug modifié
+			if errorResp.Error.Status == 400 && len(errorResp.Error.Details.Errors) > 0 &&
+				errorResp.Error.Details.Errors[0].Path[0] == "slug" &&
+				errorResp.Error.Details.Errors[0].Message == "This attribute must be unique" {
+
+				// Ajouter un timestamp au slug pour le rendre unique
+				uniqueSlug := fmt.Sprintf("%s-%d", slug, time.Now().Unix())
+
+				// Mettre à jour les données avec le nouveau slug
+				data["data"].(map[string]interface{})["slug"] = uniqueSlug
+
+				jsonData, err = json.Marshal(data)
+				if err != nil {
+					return "", fmt.Errorf("erreur lors de la sérialisation des données de la fiche avec slug unique: %w", err)
+				}
+
+				// Créer une nouvelle requête
+				req, err = http.NewRequest("POST", c.BaseURL+"/api/fiches", bytes.NewBuffer(jsonData))
+				if err != nil {
+					return "", fmt.Errorf("erreur lors de la création de la requête avec slug unique: %w", err)
+				}
+
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+c.Token)
+
+				// Envoyer la requête
+				resp, err = c.HTTPClient.Do(req)
+				if err != nil {
+					return "", fmt.Errorf("erreur lors de l'envoi de la requête avec slug unique: %w", err)
+				}
+				defer resp.Body.Close()
+
+				// Lire la réponse
+				body, err = io.ReadAll(resp.Body)
+				if err != nil {
+					return "", fmt.Errorf("erreur lors de la lecture de la réponse avec slug unique: %w", err)
+				}
+
+				// Vérifier si la requête a réussi
+				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+					return "", fmt.Errorf("erreur lors de la création de la fiche avec slug unique: code %d, réponse: %s", resp.StatusCode, string(body))
+				}
+			} else {
+				return "", fmt.Errorf("erreur lors de la création de la fiche: code %d, réponse: %s", resp.StatusCode, string(body))
+			}
+		} else {
+			return "", fmt.Errorf("erreur lors de la création de la fiche: code %d, réponse: %s", resp.StatusCode, string(body))
+		}
+	}
+
+	// Décoder la réponse JSON
+	var ficheResp FicheResponse
+	if err := json.Unmarshal(body, &ficheResp); err != nil {
+		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	}
+
+	// Retourner l'ID de la fiche créée
+	return fmt.Sprintf("%d", ficheResp.Data.ID), nil
+}
+
+// CreateLink crée un nouveau lien dans Strapi
+func (c *StrapiClient) CreateLink(ficheID, embedURL string) (string, error) {
+	// Vérifier si le token est disponible
+	if c.Token == "" {
+		if err := c.Login(); err != nil {
+			return "", fmt.Errorf("erreur lors de la connexion: %w", err)
+		}
+	}
+
+	// Préparer les données du lien
+	data := map[string]interface{}{
+		"data": map[string]interface{}{
+			"url":   embedURL,
+			"fiche": ficheID,
+		},
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la sérialisation des données du lien: %w", err)
+	}
+
+	// Créer la requête
+	req, err := http.NewRequest("POST", c.BaseURL+"/api/links", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la création de la requête: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+
+	// Envoyer la requête
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Lire la réponse
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
+	}
+
+	// Vérifier si la requête a réussi
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("erreur lors de la création du lien: code %d, réponse: %s", resp.StatusCode, string(body))
+	}
+
+	// Décoder la réponse JSON
+	var linkResp LinkResponse
+	if err := json.Unmarshal(body, &linkResp); err != nil {
+		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	}
+
+	// Retourner l'ID du lien créé
+	return fmt.Sprintf("%d", linkResp.Data.ID), nil
 }
