@@ -119,13 +119,30 @@ func (n *NetuUploader) getUploadServer() (string, error) {
 		return "", fmt.Errorf("le serveur a retourné un code non-200: %d", resp.StatusCode)
 	}
 
+	// Lire le corps de la réponse pour le débogage
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
+	}
+
+	// Log de la réponse pour le débogage
+	log.Printf("Réponse du serveur pour upload_server: %s", string(body))
+
+	// Décoder la réponse JSON
 	var response NetuUploadServerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
+	// Vérifier si l'API a retourné un succès
+	// Le code 200 est un succès, donc on ne doit pas le traiter comme une erreur
 	if !response.Success {
-		return "", fmt.Errorf("l'API a retourné une erreur: %d", response.Status)
+		return "", fmt.Errorf("l'API a retourné une erreur avec le statut: %d", response.Status)
+	}
+
+	// Vérifier si l'URL est vide
+	if response.Result.URL == "" {
+		return "", fmt.Errorf("l'API a retourné une URL vide")
 	}
 
 	return response.Result.URL, nil
@@ -189,6 +206,9 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
+	// Log de la réponse pour le débogage
+	log.Printf("Réponse du serveur pour l'upload: %s", string(body))
+
 	// Décoder la réponse JSON
 	var response NetuUploadFileResponse
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -197,7 +217,7 @@ func (n *NetuUploader) uploadToServer(filePath, serverURL string) (string, error
 
 	// Vérifier si l'upload a réussi
 	if !response.Success {
-		return "", fmt.Errorf("l'upload a échoué: %d", response.Status)
+		return "", fmt.Errorf("l'upload a échoué avec le statut: %d", response.Status)
 	}
 
 	// Convertir le time_hash en string
@@ -221,13 +241,29 @@ func (n *NetuUploader) finalizeUpload(filename, title, timeHash string) (string,
 		return "", fmt.Errorf("le serveur a retourné un code non-200: %d", resp.StatusCode)
 	}
 
+	// Lire le corps de la réponse pour le débogage
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
+	}
+
+	// Log de la réponse pour le débogage
+	log.Printf("Réponse du serveur pour finaliser l'upload: %s", string(body))
+
+	// Décoder la réponse JSON
 	var response NetuUploadResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
+	// Vérifier si l'API a retourné un succès
 	if !response.Success {
-		return "", fmt.Errorf("l'API a retourné une erreur: %d", response.Status)
+		return "", fmt.Errorf("l'API a retourné une erreur avec le statut: %d", response.Status)
+	}
+
+	// Vérifier si le code du fichier est vide
+	if response.Result.FileCode == "" {
+		return "", fmt.Errorf("l'API a retourné un code de fichier vide")
 	}
 
 	return response.Result.FileCode, nil
