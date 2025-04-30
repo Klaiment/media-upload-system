@@ -373,11 +373,19 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 
 	// Si Strapi est activé, envoyer les données à Strapi
 	if cfg.Strapi.Enabled && len(discordLinks) > 0 {
+		log.Printf("Strapi est activé, envoi des données pour %d liens", len(discordLinks))
 		for _, link := range discordLinks {
+			log.Printf("Envoi des données à Strapi pour le lien: %s", link.URL)
 			if err := sendToStrapi(tmdbID, title, link.URL); err != nil {
-				log.Printf("Erreur lors de l'envoi à Strapi: %v", err)
+				log.Printf("ERREUR lors de l'envoi à Strapi: %v", err)
 				// Continuer même en cas d'erreur
 			}
+		}
+	} else {
+		if !cfg.Strapi.Enabled {
+			log.Printf("Strapi est désactivé, aucune donnée envoyée")
+		} else if len(discordLinks) == 0 {
+			log.Printf("Aucun lien disponible pour Strapi")
 		}
 	}
 
@@ -514,24 +522,44 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 
 // sendToStrapi envoie les données du film à Strapi
 func sendToStrapi(tmdbID int, title, url string) error {
-	log.Printf("Envoi des données du film %s à Strapi...", title)
+	log.Printf("Envoi des données du film %s (TMDB ID: %d) à Strapi...", title, tmdbID)
+	log.Printf("URL Strapi configurée: %s", cfg.Strapi.BaseURL)
+	log.Printf("Utilisateur Strapi configuré: %s", cfg.Strapi.Username)
+
+	// Vérifier si Strapi est correctement configuré
+	if cfg.Strapi.BaseURL == "" || cfg.Strapi.Username == "" || cfg.Strapi.Password == "" {
+		return fmt.Errorf("configuration Strapi incomplète")
+	}
 
 	// Se connecter à Strapi si nécessaire
+	if strapiClient == nil {
+		log.Printf("ERREUR: Client Strapi non initialisé")
+		return fmt.Errorf("client Strapi non initialisé")
+	}
+
 	if strapiClient.AuthToken == "" {
+		log.Printf("Tentative de connexion à Strapi...")
 		if err := strapiClient.Login(); err != nil {
+			log.Printf("ERREUR lors de la connexion à Strapi: %v", err)
 			return fmt.Errorf("erreur lors de la connexion à Strapi: %w", err)
 		}
+		log.Printf("Connexion à Strapi réussie, token obtenu")
 	}
 
 	// Récupérer les détails du film depuis TMDB
+	log.Printf("Récupération des détails du film depuis TMDB...")
 	tmdbData, err := tmdbClient.GetMovieDetailsJSON(tmdbID)
 	if err != nil {
+		log.Printf("ERREUR lors de la récupération des détails du film: %v", err)
 		return fmt.Errorf("erreur lors de la récupération des détails du film: %w", err)
 	}
+	log.Printf("Détails du film récupérés depuis TMDB (%d caractères)", len(tmdbData))
 
 	// Récupérer les genres du film
+	log.Printf("Récupération des genres du film...")
 	movieDetails, err := tmdbClient.GetMovieDetails(tmdbID)
 	if err != nil {
+		log.Printf("ERREUR lors de la récupération des détails du film: %v", err)
 		return fmt.Errorf("erreur lors de la récupération des détails du film: %w", err)
 	}
 
@@ -540,24 +568,34 @@ func sendToStrapi(tmdbID int, title, url string) error {
 	for _, genre := range movieDetails.Genres {
 		genreNames = append(genreNames, genre.Name)
 	}
+	log.Printf("Genres du film: %v", genreNames)
 
 	// Trouver les IDs des genres dans Strapi
+	log.Printf("Recherche des IDs de genres dans Strapi...")
 	genderIDs, err := strapiClient.FindGenderIDsByNames(genreNames)
 	if err != nil {
+		log.Printf("ERREUR lors de la recherche des IDs de genres: %v", err)
 		return fmt.Errorf("erreur lors de la recherche des IDs de genres: %w", err)
 	}
+	log.Printf("IDs de genres trouvés dans Strapi: %v", genderIDs)
 
 	// Créer la fiche dans Strapi
+	log.Printf("Création de la fiche dans Strapi...")
 	ficheResp, err := strapiClient.CreateFiche(title, strconv.Itoa(tmdbID), tmdbData, genderIDs)
 	if err != nil {
+		log.Printf("ERREUR lors de la création de la fiche: %v", err)
 		return fmt.Errorf("erreur lors de la création de la fiche: %w", err)
 	}
+	log.Printf("Fiche créée dans Strapi avec l'ID: %s", ficheResp.Data.DocumentID)
 
 	// Créer le lien dans Strapi
-	_, err = strapiClient.CreateLink(url, ficheResp.Data.DocumentID)
+	log.Printf("Création du lien dans Strapi...")
+	linkResp, err := strapiClient.CreateLink(url, ficheResp.Data.DocumentID)
 	if err != nil {
+		log.Printf("ERREUR lors de la création du lien: %v", err)
 		return fmt.Errorf("erreur lors de la création du lien: %w", err)
 	}
+	log.Printf("Lien créé dans Strapi avec l'ID: %s", linkResp.Data.DocumentID)
 
 	log.Printf("Données du film envoyées avec succès à Strapi")
 	return nil
@@ -668,12 +706,19 @@ func main() {
 
 	// Initialiser le client Strapi si activé
 	if cfg.Strapi.Enabled {
+		log.Printf("Initialisation du client Strapi avec l'URL: %s", cfg.Strapi.BaseURL)
 		strapiClient = strapi.NewStrapiClient(cfg.Strapi.BaseURL, cfg.Strapi.Username, cfg.Strapi.Password)
 
 		// Tester la connexion à Strapi
 		if err := strapiClient.Login(); err != nil {
-			log.Printf("Avertissement: Impossible de se connecter à Strapi: %v", err)
+			log.Printf("AVERTISSEMENT: Impossible de se connecter à Strapi: %v", err)
+			log.Printf("Les uploads vers Strapi seront désactivés")
+			cfg.Strapi.Enabled = false
+		} else {
+			log.Printf("Connexion à Strapi réussie, le client est prêt")
 		}
+	} else {
+		log.Printf("Strapi est désactivé dans la configuration")
 	}
 
 	// Initialiser le client TMDB
