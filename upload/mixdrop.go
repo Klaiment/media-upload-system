@@ -24,9 +24,9 @@ type MixDropUploader struct {
 type MixDropResponse struct {
 	Success bool `json:"success"`
 	Result  struct {
-		FileRef  string `json:"fileref"`
-		URL      string `json:"url"`
-		EmbedURL string `json:"embedurl"`
+		FileRef string `json:"fileref"`
+		Title   string `json:"title"`
+		Status  string `json:"status"`
 	} `json:"result"`
 }
 
@@ -53,7 +53,7 @@ func (m *MixDropUploader) IsEnabled() bool {
 func (m *MixDropUploader) UploadFile(filePath, title string) (*UploadResult, error) {
 	log.Printf("Upload du fichier %s vers MixDrop...", filePath)
 
-	// Vérifier que le fichier existe
+	// Vérifier si le fichier existe
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("le fichier n'existe pas: %s", filePath)
 	}
@@ -66,77 +66,88 @@ func (m *MixDropUploader) UploadFile(filePath, title string) (*UploadResult, err
 	defer file.Close()
 
 	// Créer un buffer pour le corps de la requête
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
 
-	// Ajouter les paramètres du formulaire
+	// Ajouter les champs du formulaire
 	if err := writer.WriteField("email", m.Email); err != nil {
-		return nil, fmt.Errorf("erreur lors de l'écriture du champ email: %w", err)
+		return nil, fmt.Errorf("erreur lors de l'ajout du champ email: %w", err)
 	}
 
 	if err := writer.WriteField("key", m.ApiKey); err != nil {
-		return nil, fmt.Errorf("erreur lors de l'écriture du champ key: %w", err)
+		return nil, fmt.Errorf("erreur lors de l'ajout du champ key: %w", err)
+	}
+
+	if err := writer.WriteField("title", title); err != nil {
+		return nil, fmt.Errorf("erreur lors de l'ajout du champ title: %w", err)
 	}
 
 	// Ajouter le fichier
 	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la création du champ de fichier: %w", err)
+		return nil, fmt.Errorf("erreur lors de la création du champ file: %w", err)
 	}
 
-	// Copier le fichier dans le formulaire
 	if _, err := io.Copy(part, file); err != nil {
 		return nil, fmt.Errorf("erreur lors de la copie du fichier: %w", err)
 	}
 
-	// Fermer le writer pour finaliser le formulaire
+	// Fermer le writer
 	if err := writer.Close(); err != nil {
 		return nil, fmt.Errorf("erreur lors de la fermeture du writer: %w", err)
 	}
 
-	// Créer la requête HTTP
-	req, err := http.NewRequest("POST", "https://ul.mixdrop.ag/api", body)
+	// Créer la requête
+	log.Printf("Envoi de la requête à MixDrop...")
+	req, err := http.NewRequest("POST", "https://ul.mixdrop.co/api", &requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("erreur lors de la création de la requête: %w", err)
 	}
 
-	// Définir les headers
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	// Créer un client HTTP avec timeout plus long pour l'upload
+	// Envoyer la requête
 	client := &http.Client{
-		Timeout: 3 * time.Hour, // Timeout très long pour les gros fichiers
+		Timeout: 24 * time.Hour, // Timeout très long pour les gros fichiers
 	}
 
-	// Envoyer la requête
-	log.Printf("Envoi de la requête à MixDrop...")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("MixDrop a retourné un code non-200: %d", resp.StatusCode)
+	// Lire la réponse
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
-	// Décoder la réponse
-	var result MixDropResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	// Décoder la réponse JSON
+	var response MixDropResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w, réponse: %s", err, string(body))
 	}
 
-	if !result.Success {
-		return nil, fmt.Errorf("l'upload a échoué")
+	// Vérifier si l'upload a réussi
+	if !response.Success {
+		return nil, fmt.Errorf("l'upload a échoué: %s", string(body))
 	}
 
-	log.Printf("Fichier uploadé avec succès sur MixDrop, fileref: %s", result.Result.FileRef)
+	log.Printf("Fichier uploadé avec succès sur MixDrop, fileref: %s", response.Result.FileRef)
 
-	return &UploadResult{
-		Hoster:   "mixdrop",
-		FileCode: result.Result.FileRef,
-		URL:      result.Result.URL,
-		Embed:    result.Result.EmbedURL,
+	// Construire les URLs
+	directURL := fmt.Sprintf("https://mixdrop.co/f/%s", response.Result.FileRef)
+	embedURL := fmt.Sprintf("https://mixdrop.co/e/%s", response.Result.FileRef)
+
+	// Créer le résultat
+	result := &UploadResult{
 		Success:  true,
-	}, nil
+		Hoster:   "mixdrop",
+		FileCode: response.Result.FileRef,
+		URL:      directURL,
+		Embed:    embedURL,
+	}
+
+	return result, nil
 }
