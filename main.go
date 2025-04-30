@@ -32,7 +32,7 @@ var (
 	cfg           *config.Config
 	db            *storage.Database
 	workerPool    *worker.Pool
-	uploadMgr     *upload.Manager
+	uploadMgr     *upload.UploadManager // Changé de Manager à UploadManager
 	apiClient     *api.Client
 	discordClient *api.DiscordWebhook
 	strapiClient  *strapi.StrapiClient
@@ -385,17 +385,23 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 		log.Printf("Strapi est activé, envoi des données pour %d liens", len(discordLinks))
 
 		// Créer la fiche une seule fois
-		ficheID, err := createStrapiMovieFiche(tmdbID, title)
+		log.Printf("Création de la fiche dans Strapi pour le film %s (TMDB ID: %d)", title, tmdbID)
+		ficheID, err := strapiClient.CreateFiche(title, tmdbID)
 		if err != nil {
 			log.Printf("ERREUR lors de la création de la fiche Strapi: %v", err)
 			// Continuer malgré l'erreur
 		} else {
+			log.Printf("Fiche créée dans Strapi avec l'ID: %s", ficheID)
+
 			// Envoyer tous les liens d'embed à Strapi
 			for _, link := range discordLinks {
 				log.Printf("Envoi du lien d'embed à Strapi pour %s: %s", link.Hoster, link.Embed)
-				if err := sendLinkToStrapi(ficheID, link.Embed); err != nil {
+				embedLinkID, err := strapiClient.CreateLink(ficheID, link.Embed)
+				if err != nil {
 					log.Printf("ERREUR lors de l'envoi du lien à Strapi: %v", err)
 					// Continuer malgré l'erreur
+				} else {
+					log.Printf("Lien d'embed créé dans Strapi avec l'ID: %s", embedLinkID)
 				}
 			}
 		}
@@ -526,171 +532,33 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 
 	// Si Strapi est activé, envoyer les données à Strapi
 	if cfg.Strapi.Enabled && len(discordLinks) > 0 {
+		// Créer un titre formaté pour l'épisode
+		episodeTitle := fmt.Sprintf("%s - S%02dE%02d", title, season, episode)
+
 		// Créer la fiche de série une seule fois
-		ficheID, err := createStrapiSeriesFiche(tmdbID, title, season, episode)
+		log.Printf("Création de la fiche dans Strapi pour l'épisode %s (TMDB ID: %d)", episodeTitle, tmdbID)
+		ficheID, err := strapiClient.CreateFiche(episodeTitle, tmdbID)
 		if err != nil {
 			log.Printf("ERREUR lors de la création de la fiche Strapi: %v", err)
 			// Continuer malgré l'erreur
 		} else {
+			log.Printf("Fiche créée dans Strapi avec l'ID: %s", ficheID)
+
 			// Envoyer tous les liens d'embed à Strapi
 			for _, link := range discordLinks {
 				log.Printf("Envoi du lien d'embed à Strapi pour %s: %s", link.Hoster, link.Embed)
-				if err := sendLinkToStrapi(ficheID, link.Embed); err != nil {
+				embedLinkID, err := strapiClient.CreateLink(ficheID, link.Embed)
+				if err != nil {
 					log.Printf("ERREUR lors de l'envoi du lien à Strapi: %v", err)
 					// Continuer malgré l'erreur
+				} else {
+					log.Printf("Lien d'embed créé dans Strapi avec l'ID: %s", embedLinkID)
 				}
 			}
 		}
 	}
 
 	log.Printf("Upload de l'épisode terminé avec succès: %s S%02dE%02d (ID: %d)", title, season, episode, uploadID)
-	return nil
-}
-
-// createStrapiMovieFiche crée une fiche de film dans Strapi et retourne son ID
-func createStrapiMovieFiche(tmdbID int, title string) (string, error) {
-	log.Printf("Création de la fiche du film %s (TMDB ID: %d) dans Strapi...", title, tmdbID)
-
-	// Vérifier si Strapi est correctement configuré
-	if cfg.Strapi.BaseURL == "" || cfg.Strapi.Username == "" || cfg.Strapi.Password == "" {
-		return "", fmt.Errorf("configuration Strapi incomplète")
-	}
-
-	// Se connecter à Strapi si nécessaire
-	if strapiClient == nil {
-		log.Printf("ERREUR: Client Strapi non initialisé")
-		return "", fmt.Errorf("client Strapi non initialisé")
-	}
-
-	if strapiClient.AuthToken == "" {
-		log.Printf("Tentative de connexion à Strapi...")
-		if err := strapiClient.Login(); err != nil {
-			log.Printf("ERREUR lors de la connexion à Strapi: %v", err)
-			return "", fmt.Errorf("erreur lors de la connexion à Strapi: %w", err)
-		}
-		log.Printf("Connexion à Strapi réussie, token obtenu")
-	}
-
-	// Récupérer les détails du film depuis TMDB
-	log.Printf("Récupération des détails du film depuis TMDB...")
-	tmdbData, err := tmdbClient.GetMovieDetailsJSON(tmdbID)
-	if err != nil {
-		log.Printf("ERREUR lors de la récupération des détails du film: %v", err)
-		return "", fmt.Errorf("erreur lors de la récupération des détails du film: %w", err)
-	}
-	log.Printf("Détails du film récupérés depuis TMDB (%d caractères)", len(tmdbData))
-
-	// Récupérer les genres du film
-	log.Printf("Récupération des genres du film...")
-	movieDetails, err := tmdbClient.GetMovieDetails(tmdbID)
-	if err != nil {
-		log.Printf("ERREUR lors de la récupération des détails du film: %v", err)
-		return "", fmt.Errorf("erreur lors de la récupération des détails du film: %w", err)
-	}
-
-	// Extraire les noms des genres
-	var genreNames []string
-	for _, genre := range movieDetails.Genres {
-		genreNames = append(genreNames, genre.Name)
-	}
-	log.Printf("Genres du film: %v", genreNames)
-
-	// Trouver les IDs des genres dans Strapi
-	log.Printf("Recherche des IDs de genres dans Strapi...")
-	genderIDs, err := strapiClient.FindGenderIDsByNames(genreNames)
-	if err != nil {
-		log.Printf("ERREUR lors de la recherche des IDs de genres: %v", err)
-		return "", fmt.Errorf("erreur lors de la recherche des IDs de genres: %w", err)
-	}
-	log.Printf("IDs de genres trouvés dans Strapi: %v", genderIDs)
-
-	// Créer la fiche dans Strapi
-	log.Printf("Création de la fiche dans Strapi...")
-	ficheResp, err := strapiClient.CreateFiche(title, strconv.Itoa(tmdbID), tmdbData, genderIDs)
-	if err != nil {
-		log.Printf("ERREUR lors de la création de la fiche: %v", err)
-		return "", fmt.Errorf("erreur lors de la création de la fiche: %w", err)
-	}
-	log.Printf("Fiche créée dans Strapi avec l'ID: %s", ficheResp.Data.DocumentID)
-
-	return ficheResp.Data.DocumentID, nil
-}
-
-// createStrapiSeriesFiche crée une fiche de série dans Strapi et retourne son ID
-func createStrapiSeriesFiche(tmdbID int, title string, season, episode int) (string, error) {
-	log.Printf("Création de la fiche de la série %s S%02dE%02d (TMDB ID: %d) dans Strapi...", title, season, episode, tmdbID)
-
-	// Vérifier si Strapi est correctement configuré
-	if cfg.Strapi.BaseURL == "" || cfg.Strapi.Username == "" || cfg.Strapi.Password == "" {
-		return "", fmt.Errorf("configuration Strapi incomplète")
-	}
-
-	// Se connecter à Strapi si nécessaire
-	if strapiClient == nil {
-		log.Printf("ERREUR: Client Strapi non initialisé")
-		return "", fmt.Errorf("client Strapi non initialisé")
-	}
-
-	if strapiClient.AuthToken == "" {
-		log.Printf("Tentative de connexion à Strapi...")
-		if err := strapiClient.Login(); err != nil {
-			log.Printf("ERREUR lors de la connexion à Strapi: %v", err)
-			return "", fmt.Errorf("erreur lors de la connexion à Strapi: %w", err)
-		}
-		log.Printf("Connexion à Strapi réussie, token obtenu")
-	}
-
-	// TODO: Implémenter la logique spécifique pour les séries
-	// Pour l'instant, on utilise une logique simplifiée
-
-	// Créer un titre formaté pour l'épisode
-	episodeTitle := fmt.Sprintf("%s - S%02dE%02d", title, season, episode)
-
-	// Créer la fiche dans Strapi
-	log.Printf("Création de la fiche dans Strapi...")
-	ficheResp, err := strapiClient.CreateFiche(episodeTitle, strconv.Itoa(tmdbID), "", nil)
-	if err != nil {
-		log.Printf("ERREUR lors de la création de la fiche: %v", err)
-		return "", fmt.Errorf("erreur lors de la création de la fiche: %w", err)
-	}
-	log.Printf("Fiche créée dans Strapi avec l'ID: %s", ficheResp.Data.DocumentID)
-
-	return ficheResp.Data.DocumentID, nil
-}
-
-// sendLinkToStrapi envoie un lien à Strapi pour une fiche existante
-func sendLinkToStrapi(ficheID, embedURL string) error {
-	log.Printf("Envoi du lien d'embed à Strapi pour la fiche ID: %s", ficheID)
-
-	// Vérifier si Strapi est correctement configuré
-	if cfg.Strapi.BaseURL == "" || cfg.Strapi.Username == "" || cfg.Strapi.Password == "" {
-		return fmt.Errorf("configuration Strapi incomplète")
-	}
-
-	// Se connecter à Strapi si nécessaire
-	if strapiClient == nil {
-		log.Printf("ERREUR: Client Strapi non initialisé")
-		return fmt.Errorf("client Strapi non initialisé")
-	}
-
-	if strapiClient.AuthToken == "" {
-		log.Printf("Tentative de connexion à Strapi...")
-		if err := strapiClient.Login(); err != nil {
-			log.Printf("ERREUR lors de la connexion à Strapi: %v", err)
-			return fmt.Errorf("erreur lors de la connexion à Strapi: %w", err)
-		}
-		log.Printf("Connexion à Strapi réussie, token obtenu")
-	}
-
-	// Créer le lien dans Strapi
-	log.Printf("Création du lien dans Strapi...")
-	linkResp, err := strapiClient.CreateLink(embedURL, ficheID)
-	if err != nil {
-		log.Printf("ERREUR lors de la création du lien: %v", err)
-		return fmt.Errorf("erreur lors de la création du lien: %w", err)
-	}
-	log.Printf("Lien créé dans Strapi avec l'ID: %s", linkResp.Data.DocumentID)
-
 	return nil
 }
 
@@ -753,7 +621,7 @@ func main() {
 	defer workerPool.Stop()
 
 	// Initialiser le gestionnaire d'uploads
-	uploadMgr = upload.NewManager()
+	uploadMgr = upload.NewUploadManager() // Changé de NewManager à NewUploadManager
 
 	// Enregistrer les uploaders
 	if cfg.Uploaders.Netu.Enabled {
