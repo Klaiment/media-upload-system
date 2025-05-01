@@ -35,12 +35,6 @@ var (
 	tmdbClient    *tmdb.TMDBClient
 )
 
-var (
-	configFile = flag.String("config", "config.json", "Chemin vers le fichier de configuration")
-	watchMode  = flag.Bool("watch", false, "Activer le mode surveillance")
-	cronMode   = flag.Bool("cron", false, "Activer le mode cron")
-)
-
 // Gestionnaire de webhook
 func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	// Vérifier la méthode HTTP
@@ -590,6 +584,9 @@ func main() {
 	// Analyser les arguments de la ligne de commande
 	configPath := flag.String("config", "config.json", "Chemin vers le fichier de configuration")
 	createConfig := flag.Bool("create-config", false, "Créer un fichier de configuration par défaut")
+	// Suppression des variables non utilisées
+	// watchMode := flag.Bool("watch", false, "Activer le mode surveillance")
+	// cronMode := flag.Bool("cron", false, "Activer le mode cron")
 	flag.Parse()
 
 	// Créer un fichier de configuration par défaut si demandé
