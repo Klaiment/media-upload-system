@@ -1,10 +1,9 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
-	"sync"
 	"time"
 )
 
