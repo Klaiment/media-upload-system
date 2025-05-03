@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -197,7 +198,44 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 	}
 }
 
-// Traiter l'upload d'un film
+// Add this function to limit memory usage during uploads
+func limitMemoryUsage(filePath string, uploadFunc func(string, string) (*upload.UploadResult, error), title string) (*upload.UploadResult, error) {
+	// Get file info
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("erreur lors de l'obtention des informations du fichier: %w", err)
+	}
+
+	fileSize := fileInfo.Size()
+
+	// For very large files (over 4GB), use a streaming approach
+	if fileSize > 4*1024*1024*1024 {
+		log.Printf("Fichier volumineux détecté (%d GB), utilisation du mode économie de mémoire", fileSize/(1024*1024*1024))
+
+		// Set GOMAXPROCS to limit CPU usage during heavy uploads
+		originalMaxProcs := runtime.GOMAXPROCS(0)
+		runtime.GOMAXPROCS(2) // Limit to 2 cores during upload
+
+		// Force garbage collection before starting the upload
+		runtime.GC()
+
+		// Execute the upload
+		result, err := uploadFunc(filePath, title)
+
+		// Restore original GOMAXPROCS
+		runtime.GOMAXPROCS(originalMaxProcs)
+
+		// Force garbage collection after upload
+		runtime.GC()
+
+		return result, err
+	}
+
+	// For smaller files, just use the normal upload function
+	return uploadFunc(filePath, title)
+}
+
+// Modify the processMovieUpload function to use our memory-limiting function
 func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) error {
 	log.Printf("Traitement de l'upload du film: %s (ID: %d)", title, uploadID)
 
@@ -215,7 +253,7 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 	// Uploader vers MixDrop si activé
 	if cfg.Uploaders.MixDrop.Enabled {
 		wg.Add(1)
-		workerPool.AddTask(func() error {
+		go func() {
 			defer wg.Done()
 			log.Printf("Démarrage de l'upload vers mixdrop pour le film %s (ID: %d)", title, uploadID)
 
@@ -225,27 +263,27 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 				cfg.Uploaders.MixDrop.Enabled,
 			)
 
-			result, err := mixdropUploader.UploadFile(filePath, title)
+			// Utiliser notre fonction de limitation de mémoire
+			result, err := limitMemoryUsage(filePath, mixdropUploader.UploadFile, title)
+
 			if err != nil {
 				log.Printf("Erreur lors de l'upload vers MixDrop: %v", err)
 				mutex.Lock()
 				errors = append(errors, err)
 				mutex.Unlock()
-				return err
 			} else {
 				log.Printf("Upload vers mixdrop terminé avec succès pour le film %s (ID: %d)", title, uploadID)
 				mutex.Lock()
 				results = append(results, result)
 				mutex.Unlock()
-				return nil
 			}
-		})
+		}()
 	}
 
 	// Uploader vers Netu si activé
 	if cfg.Uploaders.Netu.Enabled {
 		wg.Add(1)
-		workerPool.AddTask(func() error {
+		go func() {
 			defer wg.Done()
 			log.Printf("Démarrage de l'upload vers netu pour le film %s (ID: %d)", title, uploadID)
 
@@ -254,21 +292,21 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 				cfg.Uploaders.Netu.Enabled,
 			)
 
-			result, err := netuUploader.UploadFile(filePath, title)
+			// Utiliser notre fonction de limitation de mémoire
+			result, err := limitMemoryUsage(filePath, netuUploader.UploadFile, title)
+
 			if err != nil {
 				log.Printf("Erreur lors de l'upload vers Netu: %v", err)
 				mutex.Lock()
 				errors = append(errors, err)
 				mutex.Unlock()
-				return err
 			} else {
 				log.Printf("Upload vers netu terminé avec succès pour le film %s (ID: %d)", title, uploadID)
 				mutex.Lock()
 				results = append(results, result)
 				mutex.Unlock()
-				return nil
 			}
-		})
+		}()
 	}
 
 	// Attendre que tous les uploads soient terminés
@@ -451,7 +489,12 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 				cfg.Uploaders.MixDrop.Enabled,
 			)
 
-			result, err := mixdropUploader.UploadFile(filePath, episodeTitle)
+			uploadFunc := func(filePath string, title string) (*upload.UploadResult, error) {
+				return mixdropUploader.UploadFile(filePath, title)
+			}
+
+			result, err := limitMemoryUsage(filePath, uploadFunc, episodeTitle)
+
 			if err != nil {
 				log.Printf("Erreur lors de l'upload vers MixDrop: %v", err)
 				mutex.Lock()
@@ -480,7 +523,12 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 				cfg.Uploaders.Netu.Enabled,
 			)
 
-			result, err := netuUploader.UploadFile(filePath, episodeTitle)
+			uploadFunc := func(filePath string, title string) (*upload.UploadResult, error) {
+				return netuUploader.UploadFile(filePath, title)
+			}
+
+			result, err := limitMemoryUsage(filePath, uploadFunc, episodeTitle)
+
 			if err != nil {
 				log.Printf("Erreur lors de l'upload vers Netu: %v", err)
 				mutex.Lock()

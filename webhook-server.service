@@ -1,0 +1,16 @@
+[Unit]
+Description=Media Upload Webhook Server
+After=network.target
+
+[Service]
+User=clement
+WorkingDirectory=/media-upload-system
+ExecStart=/media-upload-system/webhook-server
+Restart=on-failure
+# Limit memory usage to 8GB
+MemoryLimit=8G
+# Set a soft memory limit that triggers optimization
+MemoryHigh=6G
+
+[Install]
+WantedBy=multi-user.target
