@@ -1,8 +1,6 @@
 package worker
 
 import (
-	"encoding/json"
-	"fmt"
 	"log"
 	"sync"
 	"time"
