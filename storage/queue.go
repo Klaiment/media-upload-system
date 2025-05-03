@@ -1,64 +1,12 @@
 package storage
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 )
-
-// QueueStatus représente l'état d'une tâche dans la queue
-type QueueStatus string
-
-const (
-	QueueStatusPending    QueueStatus = "pending"
-	QueueStatusProcessing QueueStatus = "processing"
-	QueueStatusCompleted  QueueStatus = "completed"
-	QueueStatusFailed     QueueStatus = "failed"
-)
-
-// QueueItem représente une tâche dans la queue
-type QueueItem struct {
-	ID          int64       `json:"id"`
-	Type        string      `json:"type"`
-	Payload     string      `json:"payload"`
-	Status      QueueStatus `json:"status"`
-	Attempts    int         `json:"attempts"`
-	MaxAttempts int         `json:"max_attempts"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
-	ProcessedAt *time.Time  `json:"processed_at"`
-}
-
-// TaskPayload représente les données d'une tâche
-type TaskPayload struct {
-	UploadID int64  `json:"upload_id"`
-	TmdbID   int    `json:"tmdb_id"`
-	Title    string `json:"title"`
-	FilePath string `json:"file_path"`
-	Season   *int   `json:"season,omitempty"`
-	Episode  *int   `json:"episode,omitempty"`
-}
-
-// InitQueueTable initialise la table de queue dans la base de données
-func (db *Database) InitQueueTable() error {
-	query := `
-	CREATE TABLE IF NOT EXISTS queue (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		type TEXT NOT NULL,
-		payload TEXT NOT NULL,
-		status TEXT NOT NULL,
-		attempts INTEGER NOT NULL DEFAULT 0,
-		max_attempts INTEGER NOT NULL DEFAULT 3,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		processed_at TIMESTAMP
-	)`
-
-	_, err := db.db.Exec(query)
-	return err
-}
 
 // AddToQueue ajoute une tâche à la queue
 func (db *Database) AddToQueue(taskType string, payload interface{}, maxAttempts int) (int64, error) {
