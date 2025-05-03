@@ -1,16 +1,27 @@
 [Unit]
 Description=Media Upload Webhook Server
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
+Type=simple
 User=clement
 WorkingDirectory=/media-upload-system
 ExecStart=/media-upload-system/webhook-server
-Restart=on-failure
-# Limit memory usage to 8GB
+Restart=always
+RestartSec=10
+# Redémarrer même en cas d'erreur de sortie
+RestartForceExitStatus=0 SIGABRT SIGILL SIGINT SIGKILL SIGQUIT SIGTERM SIGSTOP
+# Limites de mémoire
 MemoryLimit=8G
-# Set a soft memory limit that triggers optimization
 MemoryHigh=6G
+# Limites de CPU
+CPUQuota=80%
+# Limites de fichiers
+LimitNOFILE=65535
+# Journalisation
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

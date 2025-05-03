@@ -29,7 +29,7 @@ var (
 	cfg           *config.Config
 	db            *storage.Database
 	workerPool    *worker.Pool
-	uploadMgr     *upload.Uploader // Utilisation du type Uploader au lieu de Manager
+	queueManager  *worker.QueueManager
 	apiClient     *api.Client
 	discordClient *api.DiscordWebhook
 	strapiClient  *strapi.StrapiClient
@@ -137,10 +137,22 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 
 		log.Printf("Upload ajouté à la base de données avec l'ID: %d", uploadID)
 
-		// Ajouter la tâche au pool de workers
-		workerPool.AddTask(func() error {
-			return processMovieUpload(uploadID, webhook.Movie.TmdbId, webhook.Movie.Title, webhook.MovieFile.Path)
-		})
+		// Créer le payload pour la queue
+		payload := storage.TaskPayload{
+			UploadID: uploadID,
+			TmdbID:   webhook.Movie.TmdbId,
+			Title:    webhook.Movie.Title,
+			FilePath: webhook.MovieFile.Path,
+		}
+
+		// Ajouter la tâche à la queue
+		taskID, err := queueManager.AddTask("movie_upload", payload, 3)
+		if err != nil {
+			log.Printf("Erreur lors de l'ajout de la tâche à la queue: %v", err)
+			return
+		}
+
+		log.Printf("Tâche d'upload ajoutée à la queue avec l'ID: %d", taskID)
 
 	} else if webhook.Series != nil && webhook.Episodes != nil {
 		log.Printf("=== SÉRIE TÉLÉCHARGÉE ===")
@@ -188,10 +200,24 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 
 			log.Printf("Upload ajouté à la base de données avec l'ID: %d", uploadID)
 
-			// Ajouter la tâche au pool de workers
-			workerPool.AddTask(func() error {
-				return processEpisodeUpload(uploadID, webhook.Series.TmdbId, webhook.Series.Title, newUpload.FilePath, season, episodeNum)
-			})
+			// Créer le payload pour la queue
+			payload := storage.TaskPayload{
+				UploadID: uploadID,
+				TmdbID:   webhook.Series.TmdbId,
+				Title:    webhook.Series.Title,
+				FilePath: newUpload.FilePath,
+				Season:   &season,
+				Episode:  &episodeNum,
+			}
+
+			// Ajouter la tâche à la queue
+			taskID, err := queueManager.AddTask("episode_upload", payload, 3)
+			if err != nil {
+				log.Printf("Erreur lors de l'ajout de la tâche à la queue: %v", err)
+				continue
+			}
+
+			log.Printf("Tâche d'upload ajoutée à la queue avec l'ID: %d", taskID)
 		}
 	} else {
 		log.Printf("Événement de téléchargement sans média identifiable")
@@ -235,7 +261,30 @@ func limitMemoryUsage(filePath string, uploadFunc func(string, string) (*upload.
 	return uploadFunc(filePath, title)
 }
 
-// Modify the processMovieUpload function to use our memory-limiting function
+// Gestionnaires de tâches pour la queue
+func handleMovieUploadTask(payloadBytes []byte) error {
+	var payload storage.TaskPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return fmt.Errorf("erreur lors du décodage du payload: %w", err)
+	}
+
+	return processMovieUpload(payload.UploadID, payload.TmdbID, payload.Title, payload.FilePath)
+}
+
+func handleEpisodeUploadTask(payloadBytes []byte) error {
+	var payload storage.TaskPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return fmt.Errorf("erreur lors du décodage du payload: %w", err)
+	}
+
+	if payload.Season == nil || payload.Episode == nil {
+		return fmt.Errorf("saison ou épisode manquant dans le payload")
+	}
+
+	return processEpisodeUpload(payload.UploadID, payload.TmdbID, payload.Title, payload.FilePath, *payload.Season, *payload.Episode)
+}
+
+// Traiter l'upload d'un film
 func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) error {
 	log.Printf("Traitement de l'upload du film: %s (ID: %d)", title, uploadID)
 
@@ -479,7 +528,7 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 	// Uploader vers MixDrop si activé
 	if cfg.Uploaders.MixDrop.Enabled {
 		wg.Add(1)
-		workerPool.AddTask(func() error {
+		go func() {
 			defer wg.Done()
 			log.Printf("Démarrage de l'upload vers mixdrop pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
 
@@ -500,21 +549,19 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 				mutex.Lock()
 				errors = append(errors, err)
 				mutex.Unlock()
-				return err
 			} else {
 				log.Printf("Upload vers mixdrop terminé avec succès pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
 				mutex.Lock()
 				results = append(results, result)
 				mutex.Unlock()
-				return nil
 			}
-		})
+		}()
 	}
 
 	// Uploader vers Netu si activé
 	if cfg.Uploaders.Netu.Enabled {
 		wg.Add(1)
-		workerPool.AddTask(func() error {
+		go func() {
 			defer wg.Done()
 			log.Printf("Démarrage de l'upload vers netu pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
 
@@ -534,15 +581,13 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 				mutex.Lock()
 				errors = append(errors, err)
 				mutex.Unlock()
-				return err
 			} else {
 				log.Printf("Upload vers netu terminé avec succès pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
 				mutex.Lock()
 				results = append(results, result)
 				mutex.Unlock()
-				return nil
 			}
-		})
+		}()
 	}
 
 	// Attendre que tous les uploads soient terminés
@@ -632,9 +677,6 @@ func main() {
 	// Analyser les arguments de la ligne de commande
 	configPath := flag.String("config", "config.json", "Chemin vers le fichier de configuration")
 	createConfig := flag.Bool("create-config", false, "Créer un fichier de configuration par défaut")
-	// Suppression des variables non utilisées
-	// watchMode := flag.Bool("watch", false, "Activer le mode surveillance")
-	// cronMode := flag.Bool("cron", false, "Activer le mode cron")
 	flag.Parse()
 
 	// Créer un fichier de configuration par défaut si demandé
@@ -689,8 +731,16 @@ func main() {
 	workerPool.Start()
 	defer workerPool.Stop()
 
-	// Nous n'initialisons plus le gestionnaire d'uploads ici
-	// car nous créons directement les uploaders dans les fonctions processMovieUpload et processEpisodeUpload
+	// Initialiser le gestionnaire de queue
+	queueManager = worker.NewQueueManager(db, workerPool)
+
+	// Enregistrer les gestionnaires de tâches
+	queueManager.RegisterHandler("movie_upload", handleMovieUploadTask)
+	queueManager.RegisterHandler("episode_upload", handleEpisodeUploadTask)
+
+	// Démarrer le gestionnaire de queue
+	queueManager.Start()
+	defer queueManager.Stop()
 
 	// Initialiser le client API
 	apiClient = api.NewClient(cfg.API.Endpoint)
