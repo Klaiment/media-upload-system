@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"time"
 
 	"media-upload-system/api"
@@ -232,6 +233,23 @@ func optimizeMemoryForUpload() {
 	runtime.GOMAXPROCS(2)
 }
 
+// Ajouter cette nouvelle fonction après la fonction optimizeMemoryForUpload()
+// Fonction pour libérer la mémoire après un upload réussi
+func freeMemoryAfterUpload() {
+	// Forcer plusieurs cycles de garbage collection pour libérer autant de mémoire que possible
+	for i := 0; i < 3; i++ {
+		runtime.GC()
+	}
+
+	// Libérer la mémoire au système d'exploitation si possible
+	debug.FreeOSMemory()
+
+	// Attendre un court instant pour que le système puisse traiter la libération
+	time.Sleep(100 * time.Millisecond)
+
+	log.Printf("Mémoire libérée après upload")
+}
+
 // Fonction pour restaurer les paramètres normaux après un upload
 func restoreNormalSettings() {
 	// Restaurer le nombre normal de threads Go
@@ -369,6 +387,9 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 
 		log.Printf("Upload vers %s terminé avec succès pour le film %s (ID: %d)",
 			uploaderConfig.Name, title, uploadID)
+
+		// Libérer la mémoire après un upload réussi
+		freeMemoryAfterUpload()
 
 		results = append(results, result)
 		uploadSuccess = true
@@ -677,6 +698,9 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 
 		log.Printf("Upload vers %s terminé avec succès pour l'épisode %s (ID: %d)",
 			uploaderConfig.Name, episodeTitle, uploadID)
+
+		// Libérer la mémoire après un upload réussi
+		freeMemoryAfterUpload()
 
 		results = append(results, result)
 		uploadSuccess = true
