@@ -305,7 +305,7 @@ func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
 		"data": map[string]interface{}{
 			"title":   title,
 			"slug":    slug,
-			"tmdb_id": tmdbID,
+			"tmdb_id": fmt.Sprintf("%d", tmdbID),
 		},
 	}
 
