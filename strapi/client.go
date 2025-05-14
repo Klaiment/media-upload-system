@@ -318,7 +318,7 @@ func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
 	// Préparer les données de la fiche
 	data := map[string]interface{}{
 		"data": map[string]interface{}{
-			"title":   title,
+			"title":   title, // Valeur par défaut
 			"slug":    slug,
 			"tmdb_id": fmt.Sprintf("%d", tmdbID),
 		},
@@ -326,8 +326,17 @@ func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
 
 	// Ajouter les données TMDB si disponibles
 	if tmdbData != "" {
-		var tmdbJSON interface{}
+		var tmdbJSON map[string]interface{}
 		if err := json.Unmarshal([]byte(tmdbData), &tmdbJSON); err == nil {
+			// Utiliser le titre de TMDB si disponible
+			if tmdbTitle, ok := tmdbJSON["title"].(string); ok && tmdbTitle != "" {
+				data["data"].(map[string]interface{})["title"] = tmdbTitle
+				// Recréer le slug avec le nouveau titre
+				slug = CreateSlug(tmdbTitle)
+				data["data"].(map[string]interface{})["slug"] = slug
+			}
+
+			// Ajouter les données TMDB complètes
 			data["data"].(map[string]interface{})["tmdb_data"] = tmdbJSON
 		}
 	}
