@@ -413,7 +413,7 @@ func (c *StrapiClient) CreateLink(ficheID, embedURL string) (string, error) {
 	// Préparer les données du lien
 	data := map[string]interface{}{
 		"data": map[string]interface{}{
-			"url":   embedURL,
+			"link":  embedURL,
 			"fiche": ficheID,
 		},
 	}
