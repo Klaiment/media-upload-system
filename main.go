@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"time"
 
@@ -227,35 +226,35 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 // Add this function to limit memory usage during uploads
 func limitMemoryUsage(filePath string, uploadFunc func(string, string) (*upload.UploadResult, error), title string) (*upload.UploadResult, error) {
 	// Get file info
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("erreur lors de l'obtention des informations du fichier: %w", err)
-	}
+	/*	fileInfo, err := os.Stat(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("erreur lors de l'obtention des informations du fichier: %w", err)
+		}
 
-	fileSize := fileInfo.Size()
+		fileSize := fileInfo.Size()
 
-	// For very large files (over 4GB), use a streaming approach
-	if fileSize > 4*1024*1024*1024 {
-		log.Printf("Fichier volumineux détecté (%d GB), utilisation du mode économie de mémoire", fileSize/(1024*1024*1024))
+		// For very large files (over 4GB), use a streaming approach
+		if fileSize > 4*1024*1024*1024 {
+			log.Printf("Fichier volumineux détecté (%d GB), utilisation du mode économie de mémoire", fileSize/(1024*1024*1024))
 
-		// Set GOMAXPROCS to limit CPU usage during heavy uploads
-		originalMaxProcs := runtime.GOMAXPROCS(0)
-		runtime.GOMAXPROCS(2) // Limit to 2 cores during upload
+			// Set GOMAXPROCS to limit CPU usage during heavy uploads
+			originalMaxProcs := runtime.GOMAXPROCS(0)
+			runtime.GOMAXPROCS(2) // Limit to 2 cores during upload
 
-		// Force garbage collection before starting the upload
-		runtime.GC()
+			// Force garbage collection before starting the upload
+			runtime.GC()
 
-		// Execute the upload
-		result, err := uploadFunc(filePath, title)
+			// Execute the upload
+			result, err := uploadFunc(filePath, title)
 
-		// Restore original GOMAXPROCS
-		runtime.GOMAXPROCS(originalMaxProcs)
+			// Restore original GOMAXPROCS
+			runtime.GOMAXPROCS(originalMaxProcs)
 
-		// Force garbage collection after upload
-		runtime.GC()
+			// Force garbage collection after upload
+			runtime.GC()
 
-		return result, err
-	}
+			return result, err
+		}*/
 
 	// For smaller files, just use the normal upload function
 	return uploadFunc(filePath, title)
