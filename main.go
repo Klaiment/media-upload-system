@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
+	"runtime"
 	"time"
 
 	"media-upload-system/api"
@@ -223,41 +223,22 @@ func handleDownloadEvent(webhook *model.RadarrWebhook) {
 	}
 }
 
-// Add this function to limit memory usage during uploads
-func limitMemoryUsage(filePath string, uploadFunc func(string, string) (*upload.UploadResult, error), title string) (*upload.UploadResult, error) {
-	// Get file info
-	/*	fileInfo, err := os.Stat(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("erreur lors de l'obtention des informations du fichier: %w", err)
-		}
+// Fonction pour optimiser l'utilisation de la mémoire pendant les uploads
+func optimizeMemoryForUpload() {
+	// Forcer le garbage collection avant l'opération
+	runtime.GC()
 
-		fileSize := fileInfo.Size()
+	// Limiter le nombre de threads Go
+	runtime.GOMAXPROCS(2)
+}
 
-		// For very large files (over 4GB), use a streaming approach
-		if fileSize > 4*1024*1024*1024 {
-			log.Printf("Fichier volumineux détecté (%d GB), utilisation du mode économie de mémoire", fileSize/(1024*1024*1024))
+// Fonction pour restaurer les paramètres normaux après un upload
+func restoreNormalSettings() {
+	// Restaurer le nombre normal de threads Go
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
-			// Set GOMAXPROCS to limit CPU usage during heavy uploads
-			originalMaxProcs := runtime.GOMAXPROCS(0)
-			runtime.GOMAXPROCS(2) // Limit to 2 cores during upload
-
-			// Force garbage collection before starting the upload
-			runtime.GC()
-
-			// Execute the upload
-			result, err := uploadFunc(filePath, title)
-
-			// Restore original GOMAXPROCS
-			runtime.GOMAXPROCS(originalMaxProcs)
-
-			// Force garbage collection after upload
-			runtime.GC()
-
-			return result, err
-		}*/
-
-	// For smaller files, just use the normal upload function
-	return uploadFunc(filePath, title)
+	// Forcer le garbage collection après l'opération
+	runtime.GC()
 }
 
 // Gestionnaires de tâches pour la queue
@@ -294,74 +275,98 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 
 	// Créer une liste pour stocker les résultats d'upload
 	var results []*upload.UploadResult
-	var mutex sync.Mutex
-	var wg sync.WaitGroup
-	var errors []error
+	var uploadSuccess bool = false
 
-	// Uploader vers MixDrop si activé
-	if cfg.Uploaders.MixDrop.Enabled {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			log.Printf("Démarrage de l'upload vers mixdrop pour le film %s (ID: %d)", title, uploadID)
+	// Optimiser la mémoire avant les uploads
+	optimizeMemoryForUpload()
+	defer restoreNormalSettings()
 
-			mixdropUploader := upload.NewMixDropUploader(
-				cfg.Uploaders.MixDrop.Email,
-				cfg.Uploaders.MixDrop.ApiKey,
-				cfg.Uploaders.MixDrop.Enabled,
-			)
-
-			// Utiliser notre fonction de limitation de mémoire
-			result, err := limitMemoryUsage(filePath, mixdropUploader.UploadFile, title)
-
-			if err != nil {
-				log.Printf("Erreur lors de l'upload vers MixDrop: %v", err)
-				mutex.Lock()
-				errors = append(errors, err)
-				mutex.Unlock()
-			} else {
-				log.Printf("Upload vers mixdrop terminé avec succès pour le film %s (ID: %d)", title, uploadID)
-				mutex.Lock()
-				results = append(results, result)
-				mutex.Unlock()
-			}
-		}()
+	// Définir l'ordre de priorité des uploaders
+	type UploaderConfig struct {
+		Name     string
+		Enabled  bool
+		Priority int
+		Upload   func() (*upload.UploadResult, error)
 	}
 
-	// Uploader vers Netu si activé
-	if cfg.Uploaders.Netu.Enabled {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			log.Printf("Démarrage de l'upload vers netu pour le film %s (ID: %d)", title, uploadID)
-
-			netuUploader := upload.NewNetuUploader(
-				cfg.Uploaders.Netu.ApiKey,
-				cfg.Uploaders.Netu.Enabled,
-			)
-
-			// Utiliser notre fonction de limitation de mémoire
-			result, err := limitMemoryUsage(filePath, netuUploader.UploadFile, title)
-
-			if err != nil {
-				log.Printf("Erreur lors de l'upload vers Netu: %v", err)
-				mutex.Lock()
-				errors = append(errors, err)
-				mutex.Unlock()
-			} else {
-				log.Printf("Upload vers netu terminé avec succès pour le film %s (ID: %d)", title, uploadID)
-				mutex.Lock()
-				results = append(results, result)
-				mutex.Unlock()
-			}
-		}()
+	// Configurer les uploaders disponibles
+	uploaders := []UploaderConfig{
+		{
+			Name:     "mixdrop",
+			Enabled:  cfg.Uploaders.MixDrop.Enabled,
+			Priority: 1, // Priorité plus haute (sera essayé en premier)
+			Upload: func() (*upload.UploadResult, error) {
+				mixdropUploader := upload.NewMixDropUploader(
+					cfg.Uploaders.MixDrop.Email,
+					cfg.Uploaders.MixDrop.ApiKey,
+					cfg.Uploaders.MixDrop.Enabled,
+				)
+				return mixdropUploader.UploadFile(filePath, title)
+			},
+		},
+		{
+			Name:     "netu",
+			Enabled:  cfg.Uploaders.Netu.Enabled,
+			Priority: 2, // Priorité plus basse
+			Upload: func() (*upload.UploadResult, error) {
+				netuUploader := upload.NewNetuUploader(
+					cfg.Uploaders.Netu.ApiKey,
+					cfg.Uploaders.Netu.Enabled,
+				)
+				return netuUploader.UploadFile(filePath, title)
+			},
+		},
 	}
 
-	// Attendre que tous les uploads soient terminés
-	wg.Wait()
+	// Trier les uploaders par priorité
+	// Note: Dans cette version simplifiée, on ne fait pas de tri car il n'y a que 2 uploaders
+	// Mais cette structure permet d'ajouter facilement d'autres uploaders à l'avenir
+
+	// Essayer chaque uploader jusqu'à ce qu'un réussisse
+	for _, uploaderConfig := range uploaders {
+		if !uploaderConfig.Enabled {
+			log.Printf("Uploader %s désactivé, ignoré", uploaderConfig.Name)
+			continue
+		}
+
+		log.Printf("Démarrage de l'upload vers %s pour le film %s (ID: %d)",
+			uploaderConfig.Name, title, uploadID)
+
+		// Forcer le garbage collection avant chaque upload
+		runtime.GC()
+
+		result, err := uploaderConfig.Upload()
+		if err != nil {
+			log.Printf("Erreur lors de l'upload vers %s: %v", uploaderConfig.Name, err)
+			continue
+		}
+
+		log.Printf("Upload vers %s terminé avec succès pour le film %s (ID: %d)",
+			uploaderConfig.Name, title, uploadID)
+
+		results = append(results, result)
+		uploadSuccess = true
+
+		// Si on a réussi un upload et qu'on veut économiser du temps/ressources,
+		// on peut arrêter ici au lieu d'essayer tous les uploaders
+		// Décommentez la ligne suivante pour n'utiliser qu'un seul uploader
+		// break
+	}
 
 	// Vérifier si au moins un upload a réussi
-	success := len(results) > 0
+	if !uploadSuccess {
+		if err := db.UpdateUploadStatus(uploadID, storage.StatusFailed); err != nil {
+			return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
+		}
+		return fmt.Errorf("aucun upload n'a réussi")
+	}
+
+	// Mettre à jour le statut
+	if err := db.UpdateUploadStatus(uploadID, storage.StatusCompleted); err != nil {
+		return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
+	}
+
+	// Traiter les résultats d'upload
 	var discordLinks []api.HostedLink
 
 	for _, result := range results {
@@ -386,18 +391,6 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 				FileCode: result.FileCode,
 			})
 		}
-	}
-
-	// Mettre à jour le statut
-	if success {
-		if err := db.UpdateUploadStatus(uploadID, storage.StatusCompleted); err != nil {
-			return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
-		}
-	} else {
-		if err := db.UpdateUploadStatus(uploadID, storage.StatusFailed); err != nil {
-			return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
-		}
-		return fmt.Errorf("aucun upload n'a réussi")
 	}
 
 	// Récupérer les informations du film depuis TMDB
@@ -518,82 +511,97 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 
 	// Créer une liste pour stocker les résultats d'upload
 	var results []*upload.UploadResult
-	var mutex sync.Mutex
-	var wg sync.WaitGroup
-	var errors []error
+	var uploadSuccess bool = false
 
+	// Optimiser la mémoire avant les uploads
+	optimizeMemoryForUpload()
+	defer restoreNormalSettings()
+
+	// Titre formaté pour l'épisode
 	episodeTitle := fmt.Sprintf("%s S%02dE%02d", title, season, episode)
 
-	// Uploader vers MixDrop si activé
-	if cfg.Uploaders.MixDrop.Enabled {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			log.Printf("Démarrage de l'upload vers mixdrop pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
-
-			mixdropUploader := upload.NewMixDropUploader(
-				cfg.Uploaders.MixDrop.Email,
-				cfg.Uploaders.MixDrop.ApiKey,
-				cfg.Uploaders.MixDrop.Enabled,
-			)
-
-			uploadFunc := func(filePath string, title string) (*upload.UploadResult, error) {
-				return mixdropUploader.UploadFile(filePath, title)
-			}
-
-			result, err := limitMemoryUsage(filePath, uploadFunc, episodeTitle)
-
-			if err != nil {
-				log.Printf("Erreur lors de l'upload vers MixDrop: %v", err)
-				mutex.Lock()
-				errors = append(errors, err)
-				mutex.Unlock()
-			} else {
-				log.Printf("Upload vers mixdrop terminé avec succès pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
-				mutex.Lock()
-				results = append(results, result)
-				mutex.Unlock()
-			}
-		}()
+	// Définir l'ordre de priorité des uploaders
+	type UploaderConfig struct {
+		Name     string
+		Enabled  bool
+		Priority int
+		Upload   func() (*upload.UploadResult, error)
 	}
 
-	// Uploader vers Netu si activé
-	if cfg.Uploaders.Netu.Enabled {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			log.Printf("Démarrage de l'upload vers netu pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
-
-			netuUploader := upload.NewNetuUploader(
-				cfg.Uploaders.Netu.ApiKey,
-				cfg.Uploaders.Netu.Enabled,
-			)
-
-			uploadFunc := func(filePath string, title string) (*upload.UploadResult, error) {
-				return netuUploader.UploadFile(filePath, title)
-			}
-
-			result, err := limitMemoryUsage(filePath, uploadFunc, episodeTitle)
-
-			if err != nil {
-				log.Printf("Erreur lors de l'upload vers Netu: %v", err)
-				mutex.Lock()
-				errors = append(errors, err)
-				mutex.Unlock()
-			} else {
-				log.Printf("Upload vers netu terminé avec succès pour l'épisode %s (ID: %d)", episodeTitle, uploadID)
-				mutex.Lock()
-				results = append(results, result)
-				mutex.Unlock()
-			}
-		}()
+	// Configurer les uploaders disponibles
+	uploaders := []UploaderConfig{
+		{
+			Name:     "mixdrop",
+			Enabled:  cfg.Uploaders.MixDrop.Enabled,
+			Priority: 1, // Priorité plus haute (sera essayé en premier)
+			Upload: func() (*upload.UploadResult, error) {
+				mixdropUploader := upload.NewMixDropUploader(
+					cfg.Uploaders.MixDrop.Email,
+					cfg.Uploaders.MixDrop.ApiKey,
+					cfg.Uploaders.MixDrop.Enabled,
+				)
+				return mixdropUploader.UploadFile(filePath, episodeTitle)
+			},
+		},
+		{
+			Name:     "netu",
+			Enabled:  cfg.Uploaders.Netu.Enabled,
+			Priority: 2, // Priorité plus basse
+			Upload: func() (*upload.UploadResult, error) {
+				netuUploader := upload.NewNetuUploader(
+					cfg.Uploaders.Netu.ApiKey,
+					cfg.Uploaders.Netu.Enabled,
+				)
+				return netuUploader.UploadFile(filePath, episodeTitle)
+			},
+		},
 	}
 
-	// Attendre que tous les uploads soient terminés
-	wg.Wait()
+	// Essayer chaque uploader jusqu'à ce qu'un réussisse
+	for _, uploaderConfig := range uploaders {
+		if !uploaderConfig.Enabled {
+			log.Printf("Uploader %s désactivé, ignoré", uploaderConfig.Name)
+			continue
+		}
+
+		log.Printf("Démarrage de l'upload vers %s pour l'épisode %s (ID: %d)",
+			uploaderConfig.Name, episodeTitle, uploadID)
+
+		// Forcer le garbage collection avant chaque upload
+		runtime.GC()
+
+		result, err := uploaderConfig.Upload()
+		if err != nil {
+			log.Printf("Erreur lors de l'upload vers %s: %v", uploaderConfig.Name, err)
+			continue
+		}
+
+		log.Printf("Upload vers %s terminé avec succès pour l'épisode %s (ID: %d)",
+			uploaderConfig.Name, episodeTitle, uploadID)
+
+		results = append(results, result)
+		uploadSuccess = true
+
+		// Si on a réussi un upload et qu'on veut économiser du temps/ressources,
+		// on peut arrêter ici au lieu d'essayer tous les uploaders
+		// Décommentez la ligne suivante pour n'utiliser qu'un seul uploader
+		// break
+	}
 
 	// Vérifier si au moins un upload a réussi
-	success := len(results) > 0
+	if !uploadSuccess {
+		if err := db.UpdateUploadStatus(uploadID, storage.StatusFailed); err != nil {
+			return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
+		}
+		return fmt.Errorf("aucun upload n'a réussi")
+	}
+
+	// Mettre à jour le statut
+	if err := db.UpdateUploadStatus(uploadID, storage.StatusCompleted); err != nil {
+		return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
+	}
+
+	// Traiter les résultats d'upload
 	var discordLinks []api.HostedLink
 
 	for _, result := range results {
@@ -618,18 +626,6 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 				FileCode: result.FileCode,
 			})
 		}
-	}
-
-	// Mettre à jour le statut
-	if success {
-		if err := db.UpdateUploadStatus(uploadID, storage.StatusCompleted); err != nil {
-			return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
-		}
-	} else {
-		if err := db.UpdateUploadStatus(uploadID, storage.StatusFailed); err != nil {
-			return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
-		}
-		return fmt.Errorf("aucun upload n'a réussi")
 	}
 
 	// Notifier Discord
@@ -725,8 +721,8 @@ func main() {
 	}
 	defer db.Close()
 
-	// Initialiser le pool de workers
-	workerPool = worker.NewPool(cfg.Workers.MaxConcurrent)
+	// Initialiser le pool de workers - IMPORTANT: un seul worker pour éviter les problèmes de mémoire
+	workerPool = worker.NewPool(1) // Un seul worker à la fois
 	workerPool.Start()
 	defer workerPool.Stop()
 
@@ -747,10 +743,14 @@ func main() {
 	// Initialiser le client Discord
 	discordClient = api.NewDiscordWebhook(cfg.Discord.WebhookURL)
 
+	// Initialiser le client TMDB
+	tmdbClient = tmdb.NewTMDBClient(cfg.TMDB.ApiKey)
+
 	// Initialiser le client Strapi si activé
 	if cfg.Strapi.Enabled {
 		log.Printf("Initialisation du client Strapi avec l'URL: %s", cfg.Strapi.BaseURL)
 		strapiClient = strapi.NewStrapiClient(cfg.Strapi.BaseURL, cfg.Strapi.Username, cfg.Strapi.Password, tmdbClient, db)
+
 		// Tester la connexion à Strapi
 		if err := strapiClient.Login(); err != nil {
 			log.Printf("AVERTISSEMENT: Impossible de se connecter à Strapi: %v", err)
@@ -762,9 +762,6 @@ func main() {
 	} else {
 		log.Printf("Strapi est désactivé dans la configuration")
 	}
-
-	// Initialiser le client TMDB
-	tmdbClient = tmdb.NewTMDBClient(cfg.TMDB.ApiKey)
 
 	// Définir les routes
 	http.HandleFunc("/webhook", webhookHandler)
