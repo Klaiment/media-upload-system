@@ -273,6 +273,36 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 		return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
 	}
 
+	// Vérifier si des liens existent déjà pour cet upload
+	existingLinks, err := db.GetUploadLinks(uploadID)
+	if err != nil {
+		log.Printf("Erreur lors de la récupération des liens existants: %v", err)
+	}
+
+	// Si des liens existent déjà, ne pas réuploader
+	if len(existingLinks) > 0 {
+		log.Printf("Des liens existent déjà pour cet upload (ID: %d), utilisation des liens existants", uploadID)
+
+		// Mettre à jour le statut
+		if err := db.UpdateUploadStatus(uploadID, storage.StatusCompleted); err != nil {
+			return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
+		}
+
+		// Convertir les liens existants pour Discord
+		var discordLinks []api.HostedLink
+		for _, link := range existingLinks {
+			discordLinks = append(discordLinks, api.HostedLink{
+				Hoster:   link.Hoster,
+				URL:      link.URL,
+				Embed:    link.Embed,
+				FileCode: link.FileCode,
+			})
+		}
+
+		// Continuer avec les notifications et Strapi
+		return processUploadResults(uploadID, tmdbID, title, discordLinks, true)
+	}
+
 	// Créer une liste pour stocker les résultats d'upload
 	var results []*upload.UploadResult
 	var uploadSuccess bool = false
@@ -317,10 +347,6 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 			},
 		},
 	}
-
-	// Trier les uploaders par priorité
-	// Note: Dans cette version simplifiée, on ne fait pas de tri car il n'y a que 2 uploaders
-	// Mais cette structure permet d'ajouter facilement d'autres uploaders à l'avenir
 
 	// Essayer chaque uploader jusqu'à ce qu'un réussisse
 	for _, uploaderConfig := range uploaders {
@@ -393,6 +419,12 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 		}
 	}
 
+	// Traiter les résultats (notifications Discord et Strapi)
+	return processUploadResults(uploadID, tmdbID, title, discordLinks, true)
+}
+
+// Nouvelle fonction pour traiter les résultats d'upload (notifications Discord et Strapi)
+func processUploadResults(uploadID int64, tmdbID int, title string, discordLinks []api.HostedLink, isMovie bool) error {
 	// Récupérer les informations du film depuis TMDB
 	movie, err := api.FetchTMDBMovie(tmdbID, cfg.TMDB.ApiKey)
 	if err != nil {
@@ -401,12 +433,12 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 	}
 
 	// Notifier Discord
-	if movie != nil && len(discordLinks) > 0 {
+	if movie != nil && len(discordLinks) > 0 && isMovie {
 		if err := discordClient.NotifyUpload(movie, discordLinks); err != nil {
 			log.Printf("Erreur lors de la notification à Discord: %v", err)
 			// Continuer même en cas d'erreur
 		}
-	} else {
+	} else if len(discordLinks) > 0 && isMovie {
 		// Notification simplifiée si on n'a pas pu récupérer les infos du film
 		log.Printf("Envoi d'une notification Discord simplifiée")
 
@@ -496,7 +528,7 @@ func processMovieUpload(uploadID int64, tmdbID int, title, filePath string) erro
 		}
 	}
 
-	log.Printf("Upload du film terminé avec succès: %s (ID: %d)", title, uploadID)
+	log.Printf("Traitement des résultats terminé avec succès pour: %s (ID: %d)", title, uploadID)
 	return nil
 }
 
@@ -507,6 +539,73 @@ func processEpisodeUpload(uploadID int64, tmdbID int, title, filePath string, se
 	// Mettre à jour le statut
 	if err := db.UpdateUploadStatus(uploadID, storage.StatusUploading); err != nil {
 		return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
+	}
+
+	// Vérifier si des liens existent déjà pour cet upload
+	existingLinks, err := db.GetUploadLinks(uploadID)
+	if err != nil {
+		log.Printf("Erreur lors de la récupération des liens existants: %v", err)
+	}
+
+	// Si des liens existent déjà, ne pas réuploader
+	if len(existingLinks) > 0 {
+		log.Printf("Des liens existent déjà pour cet upload (ID: %d), utilisation des liens existants", uploadID)
+
+		// Mettre à jour le statut
+		if err := db.UpdateUploadStatus(uploadID, storage.StatusCompleted); err != nil {
+			return fmt.Errorf("erreur lors de la mise à jour du statut: %w", err)
+		}
+
+		// Convertir les liens existants pour Discord
+		var discordLinks []api.HostedLink
+		for _, link := range existingLinks {
+			discordLinks = append(discordLinks, api.HostedLink{
+				Hoster:   link.Hoster,
+				URL:      link.URL,
+				Embed:    link.Embed,
+				FileCode: link.FileCode,
+			})
+		}
+
+		// Notifier Discord
+		if len(discordLinks) > 0 {
+			if err := discordClient.NotifyEpisodeUpload(title, tmdbID, season, episode, discordLinks); err != nil {
+				log.Printf("Erreur lors de la notification à Discord: %v", err)
+				// Continuer même en cas d'erreur
+			}
+		}
+
+		// Traiter Strapi
+		if cfg.Strapi.Enabled && len(discordLinks) > 0 {
+			// Créer un titre formaté pour l'épisode
+			episodeTitle := fmt.Sprintf("%s - S%02dE%02d", title, season, episode)
+
+			// Créer la fiche de série une seule fois
+			log.Printf("Création de la fiche dans Strapi pour l'épisode %s (TMDB ID: %d)", episodeTitle, tmdbID)
+			ficheID, err := strapiClient.CreateFiche(episodeTitle, tmdbID)
+			if err != nil {
+				log.Printf("ERREUR lors de la création de la fiche Strapi: %v", err)
+				// Continuer malgré l'erreur
+			} else {
+				log.Printf("Fiche créée dans Strapi avec l'ID: %s", ficheID)
+
+				// Envoyer tous les liens d'embed à Strapi
+				for _, link := range discordLinks {
+					log.Printf("Envoi du lien d'embed à Strapi pour %s: %s", link.Hoster, link.Embed)
+					embedLinkID, err := strapiClient.CreateLink(ficheID, link.Embed)
+					if err != nil {
+						log.Printf("ERREUR lors de l'envoi du lien à Strapi: %v", err)
+						// Continuer malgré l'erreur
+					} else {
+						log.Printf("Lien d'embed créé dans Strapi avec l'ID: %s", embedLinkID)
+					}
+				}
+			}
+		}
+
+		log.Printf("Upload de l'épisode terminé avec succès (liens existants): %s S%02dE%02d (ID: %d)",
+			title, season, episode, uploadID)
+		return nil
 	}
 
 	// Créer une liste pour stocker les résultats d'upload

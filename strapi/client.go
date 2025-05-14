@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -419,51 +420,62 @@ func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
 		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
-	// Récupérer les liens hébergés pour cette fiche
-	ficheID := fmt.Sprintf("%d", ficheResp.Data.ID)
+	// Retourner l'ID de la fiche créée
+	return fmt.Sprintf("%d", ficheResp.Data.ID), nil
+}
 
-	// Récupérer les liens depuis la base de données
-	uploadID, err := c.getUploadIDByTMDBID(tmdbID)
-	if err != nil {
-		log.Printf("Erreur lors de la récupération de l'ID d'upload: %v", err)
-		// Continuer malgré l'erreur
-	} else if uploadID > 0 {
-		// Récupérer les liens pour cet upload
-		links, err := c.DB.GetUploadLinks(uploadID)
-		if err != nil {
-			log.Printf("Erreur lors de la récupération des liens: %v", err)
-			// Continuer malgré l'erreur
-		} else {
-			// Associer chaque lien à la fiche
-			for _, link := range links {
-				_, err := c.CreateLink(ficheID, link.Embed)
-				if err != nil {
-					log.Printf("Erreur lors de l'association du lien à la fiche: %v", err)
-					// Continuer avec les autres liens malgré l'erreur
-				} else {
-					log.Printf("Lien associé avec succès à la fiche: %s", link.Embed)
-				}
-			}
+// Fonction pour vérifier si un lien existe déjà pour une fiche
+func (c *StrapiClient) CheckLinkExists(ficheID, embedURL string) (bool, error) {
+	// Vérifier si le token est disponible
+	if c.Token == "" {
+		if err := c.Login(); err != nil {
+			return false, fmt.Errorf("erreur lors de la connexion: %w", err)
 		}
 	}
 
-	// Retourner l'ID de la fiche créée
-	return ficheID, nil
-}
+	// Créer l'URL avec les filtres
+	apiURL := fmt.Sprintf("%s/api/links?filters[fiche][id][$eq]=%s&filters[link][$eq]=%s",
+		c.BaseURL, ficheID, url.QueryEscape(embedURL))
 
-// Ajouter cette nouvelle fonction pour récupérer l'ID d'upload par TMDB ID
-func (c *StrapiClient) getUploadIDByTMDBID(tmdbID int) (int64, error) {
-	// Rechercher l'upload correspondant au TMDB ID
-	upload, err := c.DB.CheckExistingUpload(tmdbID, storage.TypeMovie, nil, nil)
+	// Créer la requête
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return 0, fmt.Errorf("erreur lors de la recherche de l'upload: %w", err)
+		return false, fmt.Errorf("erreur lors de la création de la requête: %w", err)
 	}
 
-	if upload == nil {
-		return 0, nil // Aucun upload trouvé
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+
+	// Envoyer la requête
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("erreur lors de l'envoi de la requête: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Lire la réponse
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("erreur lors de la lecture de la réponse: %w", err)
 	}
 
-	return upload.ID, nil
+	// Vérifier si la requête a réussi
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("erreur lors de la vérification du lien: code %d, réponse: %s", resp.StatusCode, string(body))
+	}
+
+	// Décoder la réponse JSON
+	var response struct {
+		Data []struct {
+			ID int `json:"id"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return false, fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
+	}
+
+	// Si on a des résultats, le lien existe déjà
+	return len(response.Data) > 0, nil
 }
 
 // CreateLink crée un nouveau lien dans Strapi
@@ -473,6 +485,18 @@ func (c *StrapiClient) CreateLink(ficheID, embedURL string) (string, error) {
 		if err := c.Login(); err != nil {
 			return "", fmt.Errorf("erreur lors de la connexion: %w", err)
 		}
+	}
+
+	// Vérifier si le lien existe déjà
+	exists, err := c.CheckLinkExists(ficheID, embedURL)
+	if err != nil {
+		log.Printf("Erreur lors de la vérification du lien existant: %v", err)
+		// Continuer malgré l'erreur
+	}
+
+	if exists {
+		log.Printf("Le lien existe déjà pour la fiche %s: %s", ficheID, embedURL)
+		return "exists", nil
 	}
 
 	// Préparer les données du lien

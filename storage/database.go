@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -261,15 +262,44 @@ func (db *Database) UpdateUploadStatus(id int64, status string) error {
 	return err
 }
 
+// Fonction pour vérifier si un lien existe déjà
+func (db *Database) CheckLinkExists(uploadID int64, hoster, fileCode string) (bool, error) {
+	query := `
+		SELECT COUNT(*) 
+		FROM hosted_links
+		WHERE upload_id = ? AND hoster = ? AND file_code = ?
+	`
+
+	var count int
+	err := db.db.QueryRow(query, uploadID, hoster, fileCode).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+
+	return count > 0, nil
+}
+
 // AddUploadLink ajoute un lien hébergé à un upload
 func (db *Database) AddUploadLink(uploadID int64, link HostedLink) error {
+	// Vérifier si le lien existe déjà
+	exists, err := db.CheckLinkExists(uploadID, link.Hoster, link.FileCode)
+	if err != nil {
+		log.Printf("Erreur lors de la vérification du lien existant: %v", err)
+		// Continuer malgré l'erreur
+	}
+
+	if exists {
+		log.Printf("Le lien %s/%s existe déjà pour l'upload %d, ignoré", link.Hoster, link.FileCode, uploadID)
+		return nil
+	}
+
 	query := `
 		INSERT INTO hosted_links (
 			upload_id, hoster, file_code, url, embed
 		) VALUES (?, ?, ?, ?, ?)
 	`
 
-	_, err := db.db.Exec(
+	_, err = db.db.Exec(
 		query,
 		uploadID,
 		link.Hoster,
