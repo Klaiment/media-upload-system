@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"media-upload-system/storage"
+	"media-upload-system/tmdb"
 )
 
 // StrapiClient représente un client pour l'API Strapi
@@ -18,6 +21,8 @@ type StrapiClient struct {
 	Password   string
 	Token      string
 	HTTPClient *http.Client
+	TMDBClient *tmdb.TMDBClient
+	DB         *storage.Database
 }
 
 // LoginResponse représente la réponse de l'API Strapi pour la connexion
@@ -81,7 +86,7 @@ type ErrorResponse struct {
 }
 
 // NewStrapiClient crée un nouveau client Strapi
-func NewStrapiClient(baseURL, username, password string) *StrapiClient {
+func NewStrapiClient(baseURL, username, password string, tmdbClient *tmdb.TMDBClient, db *storage.Database) *StrapiClient {
 	return &StrapiClient{
 		BaseURL:  baseURL,
 		Username: username,
@@ -89,6 +94,8 @@ func NewStrapiClient(baseURL, username, password string) *StrapiClient {
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		TMDBClient: tmdbClient,
+		DB:         db,
 	}
 }
 
@@ -300,6 +307,13 @@ func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
 	// Créer un slug à partir du titre
 	slug := CreateSlug(title)
 
+	// Récupérer les données TMDB
+	tmdbData, err := c.TMDBClient.GetMovieDetailsJSON(tmdbID)
+	if err != nil {
+		log.Printf("Erreur lors de la récupération des données TMDB: %v", err)
+		// Continuer malgré l'erreur, on utilisera juste le titre et l'ID
+	}
+
 	// Préparer les données de la fiche
 	data := map[string]interface{}{
 		"data": map[string]interface{}{
@@ -307,6 +321,14 @@ func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
 			"slug":    slug,
 			"tmdb_id": fmt.Sprintf("%d", tmdbID),
 		},
+	}
+
+	// Ajouter les données TMDB si disponibles
+	if tmdbData != "" {
+		var tmdbJSON interface{}
+		if err := json.Unmarshal([]byte(tmdbData), &tmdbJSON); err == nil {
+			data["data"].(map[string]interface{})["tmdb_data"] = tmdbJSON
+		}
 	}
 
 	jsonData, err := json.Marshal(data)
@@ -397,8 +419,51 @@ func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
 		return "", fmt.Errorf("erreur lors du décodage de la réponse JSON: %w", err)
 	}
 
+	// Récupérer les liens hébergés pour cette fiche
+	ficheID := fmt.Sprintf("%d", ficheResp.Data.ID)
+
+	// Récupérer les liens depuis la base de données
+	uploadID, err := c.getUploadIDByTMDBID(tmdbID)
+	if err != nil {
+		log.Printf("Erreur lors de la récupération de l'ID d'upload: %v", err)
+		// Continuer malgré l'erreur
+	} else if uploadID > 0 {
+		// Récupérer les liens pour cet upload
+		links, err := c.DB.GetUploadLinks(uploadID)
+		if err != nil {
+			log.Printf("Erreur lors de la récupération des liens: %v", err)
+			// Continuer malgré l'erreur
+		} else {
+			// Associer chaque lien à la fiche
+			for _, link := range links {
+				_, err := c.CreateLink(ficheID, link.Embed)
+				if err != nil {
+					log.Printf("Erreur lors de l'association du lien à la fiche: %v", err)
+					// Continuer avec les autres liens malgré l'erreur
+				} else {
+					log.Printf("Lien associé avec succès à la fiche: %s", link.Embed)
+				}
+			}
+		}
+	}
+
 	// Retourner l'ID de la fiche créée
-	return fmt.Sprintf("%d", ficheResp.Data.ID), nil
+	return ficheID, nil
+}
+
+// Ajouter cette nouvelle fonction pour récupérer l'ID d'upload par TMDB ID
+func (c *StrapiClient) getUploadIDByTMDBID(tmdbID int) (int64, error) {
+	// Rechercher l'upload correspondant au TMDB ID
+	upload, err := c.DB.CheckExistingUpload(tmdbID, storage.TypeMovie, nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("erreur lors de la recherche de l'upload: %w", err)
+	}
+
+	if upload == nil {
+		return 0, nil // Aucun upload trouvé
+	}
+
+	return upload.ID, nil
 }
 
 // CreateLink crée un nouveau lien dans Strapi

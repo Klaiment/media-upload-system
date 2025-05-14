@@ -750,8 +750,7 @@ func main() {
 	// Initialiser le client Strapi si activé
 	if cfg.Strapi.Enabled {
 		log.Printf("Initialisation du client Strapi avec l'URL: %s", cfg.Strapi.BaseURL)
-		strapiClient = strapi.NewStrapiClient(cfg.Strapi.BaseURL, cfg.Strapi.Username, cfg.Strapi.Password)
-
+		strapiClient = strapi.NewStrapiClient(cfg.Strapi.BaseURL, cfg.Strapi.Username, cfg.Strapi.Password, tmdbClient, db)
 		// Tester la connexion à Strapi
 		if err := strapiClient.Login(); err != nil {
 			log.Printf("AVERTISSEMENT: Impossible de se connecter à Strapi: %v", err)
