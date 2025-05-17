@@ -50,7 +50,7 @@ type GenreResponse struct {
 // FicheResponse représente la réponse de l'API Strapi pour la création d'une fiche
 type FicheResponse struct {
 	Data struct {
-		ID int `json:"documentId"`
+		ID string `json:"documentId"`
 	} `json:"data"`
 }
 
@@ -430,7 +430,7 @@ func (c *StrapiClient) CreateFiche(title string, tmdbID int) (string, error) {
 	}
 
 	// Retourner l'ID de la fiche créée
-	return fmt.Sprintf("%d", ficheResp.Data.ID), nil
+	return fmt.Sprintf("%s", ficheResp.Data.ID), nil
 }
 
 // Fonction pour vérifier si un lien existe déjà pour une fiche
