@@ -50,7 +50,7 @@ type GenreResponse struct {
 // FicheResponse représente la réponse de l'API Strapi pour la création d'une fiche
 type FicheResponse struct {
 	Data struct {
-		ID int `json:"id"`
+		ID int `json:"documentId"`
 	} `json:"data"`
 }
 
